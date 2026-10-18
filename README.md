@@ -296,9 +296,19 @@ turns ask for `page` refreshes. The user's earlier attempt
 
 ## fabrum gaps found
 
+Found building this package, and fixed in fabrum's `hybrid` branch since:
+
 - No touch pan to scroll a drawn scroll container: only the wheel, the
-  scrollbar's thumb and `scrollTo`. The apps here declare `on_pointer` on
-  the list and call `ctx.scrollTo(.{ .by = … })` from the drag.
-- Scrolls the app asks for (`scrollTo`) are `content`, not `interactive`:
-  a page key is a quality partial update of the list, which is right for
-  page turns, while a pan's frames are interactive because of the drag.
+  scrollbar's thumb and `scrollTo` moved one, so the apps here declared
+  `on_pointer` on the list and called `ctx.scrollTo(.{ .by = … })` from
+  each drag. The runtime pans now when `Capabilities.pointer` is `touch`:
+  a press on a list is a pan past the drag threshold (cancelling the tap,
+  even on a row's button), and the apps declare nothing.
+- Scrolls the app asks for (`scrollTo`) were always `content`. They take
+  `ScrollOptions` now, `.{ .refresh = .interactive }` for a scroll that
+  follows a gesture of the app's own; the page keys keep the default,
+  `content`, a quality partial update of the list, which is right for a
+  page turn.
+- A list with more rows than `Context.Config.breadth` allowed crashed
+  with `unreachable`; it fails the frame with `error.LayoutCapacity` now,
+  logging which limit to raise (`ReaderShell.layout_capacity` raises it).

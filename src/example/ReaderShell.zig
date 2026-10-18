@@ -2,8 +2,9 @@
 //! for one built on the Tachiyomi (Suwayomi) protocol. A title bar, a
 //! search field that opens the system keyboard, a Menu button for the
 //! context menu, a scrolling list of chapters with Pick buttons, which
-//! the page keys and a finger pan scroll, a confirm dialog before quitting,
-//! and a Settings page the menu toggles.
+//! the page keys scroll (and a finger pans, as the runtime does for any
+//! drawn scroll container on a touch screen), a confirm dialog before
+//! quitting, and a Settings page the menu toggles.
 //!
 //! Where the reader would go: the list's items would come from the
 //! server's library through a `Poster` from a fetching thread (covers
@@ -44,8 +45,6 @@ pub const State = struct {
     show_numbers: bool = true,
     /// Whether the list has been given focus, so the page keys reach it.
     list_focused: bool = false,
-    /// Where the finger was, while panning the list.
-    pan_last: f32 = 0,
     /// What the last dialog or menu answered, for the status line.
     status: []const u8 = "Ready",
 
@@ -64,7 +63,6 @@ pub const Msg = union(enum) {
     ask_quit,
     quit_answered: ?usize,
     key: app.KeyEvent,
-    pan: app.Pointer,
     focus_list,
     invert_page_keys: bool,
     show_numbers: bool,
@@ -124,17 +122,9 @@ pub fn update(state: *State, msg: Msg, ctx: *app.Update(ReaderShell)) !void {
         .key => |event| if (event.phase == .press) {
             const down = if (state.invert_page_keys) event.key == .page_up else event.key == .page_down;
             const up = if (state.invert_page_keys) event.key == .page_down else event.key == .page_up;
-            if (down) ctx.scrollTo("chapters", .{ .by = .init(0, page_step) });
-            if (up) ctx.scrollTo("chapters", .{ .by = .init(0, -page_step) });
-        },
-        // a finger pan scrolls the list by how far it moved
-        .pan => |p| switch (p.phase) {
-            .press => state.pan_last = p.local.y,
-            .drag => {
-                ctx.scrollTo("chapters", .{ .by = .init(0, state.pan_last - p.local.y) });
-                state.pan_last = p.local.y;
-            },
-            else => {},
+            // a page turn: a quality refresh of the list, the default
+            if (down) ctx.scrollTo("chapters", .{ .by = .init(0, page_step) }, .{});
+            if (up) ctx.scrollTo("chapters", .{ .by = .init(0, -page_step) }, .{});
         },
         .focus_list => {
             state.list_focused = true;
@@ -194,7 +184,6 @@ fn library(ui: *app.Ui, state: *const State, theme: *const app.native.Theme) !vo
         .layout = .{ .sizing = .grow(.{}), .axis = .y, .padding = .init(12, 12, 4, 4), .child_gap = 6 },
         .scroll = .{ .y = true },
         .focus = .{ .on_key = on.handler(.key), .keys = .navigation_only },
-        .on_pointer = on.handler(.pan),
     });
     defer ui.close();
     for (0..chapter_count) |i| {
@@ -339,7 +328,7 @@ test "the page keys scroll the list, inverted by the setting" {
     try testing.expectEqual(page_step, h.scrollInfo(list).?.offset.y);
 }
 
-test "a pan over the chapters scrolls them" {
+test "a pan over the chapters scrolls them, even from a Pick button, which a tap still clicks" {
     var h = try harness();
     defer h.deinit();
     try h.frame();
@@ -348,4 +337,15 @@ test "a pan over the chapters scrolls them" {
     const x = box.x + box.w / 2;
     try h.drag(.init(x, box.y + box.h - 20), .init(x, box.y + 20), 5);
     try testing.expectApproxEqAbs(box.h - 40, h.scrollInfo(list).?.offset.y, 1);
+    _ = try h.runtime.damage();
+    try testing.expectEqual(app.Refresh.interactive, h.runtime.refresh());
+
+    // the runtime pans from a button too: the drag cancels its click
+    const pick = h.root().element(PickKey{ .pick = 9 });
+    const at = app.testing.center(h.findElement(pick).?);
+    try h.dragElement(pick, at.addValues(0, -60), 4);
+    try testing.expectApproxEqAbs(box.h - 40 + 60, h.scrollInfo(list).?.offset.y, 1);
+    try testing.expectEqual(0, h.state().picks);
+    try h.clickElement(h.root().element(PickKey{ .pick = 12 }));
+    try testing.expectEqual(1, h.state().picks);
 }

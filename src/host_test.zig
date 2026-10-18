@@ -17,8 +17,9 @@ const fake = root.fake;
 const inkview = root.inkview;
 
 /// A reader's screen in little: a title row with buttons that ask for
-/// each service, a text field, and a list that scrolls with a pan and
-/// the page keys, or a settings page.
+/// each service, a text field, and a list that scrolls with the page keys
+/// (and a finger, as the runtime pans any drawn scroll container on a
+/// touch screen), or a settings page.
 const Probe = struct {
     pub const State = struct {
         picks: usize = 0,
@@ -32,7 +33,6 @@ const Probe = struct {
         dir_error: ?anyerror = null,
         ticks: usize = 0,
         list_focused: bool = false,
-        pan_last: f32 = 0,
 
         pub fn deinit(self: *State, gpa: std.mem.Allocator) void {
             self.text.deinit(gpa);
@@ -48,7 +48,6 @@ const Probe = struct {
         open_menu,
         chose: ?usize,
         key: app.KeyEvent,
-        pan: app.Pointer,
         full,
         tick,
         focus_list,
@@ -88,16 +87,8 @@ const Probe = struct {
                 if (id == 3) try ctx.message(.{ .title = "About", .text = "Probe", .timeout_ms = 1500 });
             },
             .key => |e| if (e.phase == .press) switch (e.key) {
-                .page_down => ctx.scrollTo("list", .{ .by = .init(0, 200) }),
-                .page_up => ctx.scrollTo("list", .{ .by = .init(0, -200) }),
-                else => {},
-            },
-            .pan => |p| switch (p.phase) {
-                .press => state.pan_last = p.local.y,
-                .drag => {
-                    ctx.scrollTo("list", .{ .by = .init(0, state.pan_last - p.local.y) });
-                    state.pan_last = p.local.y;
-                },
+                .page_down => ctx.scrollTo("list", .{ .by = .init(0, 200) }, .{}),
+                .page_up => ctx.scrollTo("list", .{ .by = .init(0, -200) }, .{}),
                 else => {},
             },
             .full => ctx.refresh(.page),
@@ -147,7 +138,6 @@ const Probe = struct {
                     .layout = .{ .sizing = .grow(.{}), .axis = .y, .child_gap = 6, .padding = .all(4) },
                     .scroll = .{ .y = true },
                     .focus = .{ .on_key = on.handler(.key), .keys = .all },
-                    .on_pointer = on.handler(.pan),
                 });
                 defer ui.close();
                 for (0..props.items) |i| {
