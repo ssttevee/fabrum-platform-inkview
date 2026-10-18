@@ -1,0 +1,24 @@
+.{
+    .name = .fabrum_platform_inkview,
+    .version = "0.0.0",
+    .fingerprint = 0xe8803d72346c7d09,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // Only for this package's own tests and example: apps give the
+        // platform their own fabrum (see build.zig).
+        .fabrum = .{
+            .path = "../zig-layout",
+            .lazy = true,
+        },
+        // The host draws with z2d, into the panel's gray framebuffer.
+        .fabrum_renderer_z2d = .{
+            .path = "../zig-fabrum-renderer-z2d",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}
