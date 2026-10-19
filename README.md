@@ -7,9 +7,9 @@ drives the frames, the z2d renderer draws only what changed into the panel's
 gray framebuffer, fabrum's refresh hints choose the e-ink update, and
 InkView's own dialogs, menus and keyboard are the services.
 
-Written for the PocketBook Verse (model 629, Allwinner B288, firmware
-6.8–6.11), against the 6.10 SDK headers and
-[libinkview](https://github.com/ssttevee/libinkview)'s
+Written for the PocketBook Verse (model 629, Allwinner B288), with one
+`.app` targeting firmware 6.8, 6.9 and 6.10–6.11, against the 6.10 SDK
+headers and [libinkview](https://github.com/ssttevee/libinkview)'s
 [documentation](https://github.com/ssttevee/libinkview/blob/trunk/docs/README.md).
 **Nothing has run on hardware yet**: see "What needs the device".
 
@@ -81,18 +81,61 @@ zig build test       # the fake-InkView host tests and the example's Harness tes
 zig build emulator   # zig-out/emulator/ReaderShell, x86_64 Linux (see below)
 ```
 
-The device build is `arm-linux-gnueabi` with glibc 2.38 (dynamic),
+The device build is `arm-linux-gnueabi` with glibc 2.23 (dynamic),
 `-Dcpu=cortex_a7`, ReleaseSmall, whatever `-Dtarget` says. What comes out
 (checked with `file` and `llvm-readelf`): a 32-bit ARM EABI5 executable,
 soft-float (`e_flags 0x5000200`, no `Tag_ABI_VFP_args`), interpreter
-`/lib/ld-linux.so.3`, `NEEDED` only `libc.so.6` and `ld-linux.so.3`, no
-InkView symbol in it, 0.9 MB. The highest glibc symbol version it needs is
-2.36 (`arc4random_buf`, std's entropy source), so it needs firmware 6.10 or
-later (glibc 2.39); 6.8 has glibc 2.23. Lowering the pin to 2.23 would make
-std use the `getrandom` syscall instead, which the B288 kernel lacks: keep
-the pin.
+`/lib/ld-linux.so.3`, no InkView symbol in it, 0.9 MB. The highest glibc
+symbol version it needs is `GLIBC_2.17` (the clock functions), within
+6.8's glibc 2.23. There is no 6.9 SDK, but the official Verse 6.9.862
+firmware's root filesystem also has glibc 2.23.
+
+`NEEDED` is `libc.so.6`, `ld-linux.so.3`, `libpthread.so.0` and `libdl.so.2`.
+The last two supply std's threaded Io functions and `dlopen`/`dlsym` on
+glibc 2.23; their required versions are all `GLIBC_2.4`. No `librt` is
+needed: the clock functions are in libc at `GLIBC_2.17`. On glibc 2.39
+(6.10), libc supplies the old pthread and dl symbols; the compatibility
+libraries retain their version nodes. All 98 versioned imports were
+checked against the 6.8 and 6.10 B288 sysroots and the official Verse
+[U629.6.9.862](https://download.pocketbook-int.com/fw/Liangyan/629/user/20250814/sw_20250814_U629_6.9.862_user.zip)
+and [U629.6.10.1461 firmware images](https://download.pocketbook-int.com/fw/Liangyan/629/user/20250826/sw_20250826_U629_6.10.1461_accessibility_eink_user.zip).
+The 6.10 image's root filesystem contains `/lib/libpthread.so.0` and
+`/lib/libdl.so.2`, byte-identical to the 6.10 B288 SDK copies. The libinkview
+docs' statement that 6.10 "dropped" them describes libinkview's `NEEDED`
+list, not their removal from the filesystem. Other firmware images have not been checked.
+
+ReaderShell, this host, fabrum and z2d request no entropy. Hash maps use
+fixed seeds; `std.process.Init` constructs `std.Io.Threaded` without
+seeding its random generator. Its Io vtable still brings the entropy
+implementation into the binary. With Zig 0.17, libc linked and the glibc
+pin below 2.25, that implementation selects `/dev/urandom`, not the
+`getrandom` syscall. The device build checks this choice at compile time;
+its ELF has no `getrandom`, `getentropy` or `arc4random` import or ARM
+`getrandom` syscall. No std override or fabrum change is needed.
+
+This does not make future uses of `io.randomSecure` work on kernel 3.10:
+std's `/dev/urandom` path first validates the file with `statx`, which that
+kernel also lacks, and returns `error.EntropyUnavailable` if it fails.
+`io.random` then uses std's weaker PID/time/address seed. Apps needing
+secure randomness need a separate `/dev/urandom` implementation that does
+without `statx`.
+
+The same goes for files: `std.Io.Threaded` asks for a file's size and
+metadata with the `statx` syscall (Linux 4.11) whatever the kernel, so
+`File.length`, `File.stat`, `Dir.statFile` and what calls them fail on the
+B288's 3.10 kernel. Opening, reading and writing files don't use it. The
+example reads no files (its font is embedded); an app that needs sizes or
+metadata needs an `std.Io` whose stat functions use `fstat`/`fstatat`, which
+glibc 2.23 has.
 
 ## Deploying
+
+Use the same `ReaderShell.app` on B288 firmware 6.8, 6.9 and 6.10+.
+Start with the log launcher on each firmware line: the library checks
+above cover one 6.9 image and one 6.10 image; no hardware run yet.
+A missing `libpthread.so.0` or `libdl.so.2` stops the loader before the app
+starts; keep that error in the log. The RK3566 6.11 SDK is hard-float and
+is a different target.
 
 1. Connect the reader by USB and choose *PC link*.
 2. Copy `zig-out/pocketbook/ReaderShell.app` into `applications/` on the

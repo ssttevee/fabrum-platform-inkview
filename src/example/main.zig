@@ -2,10 +2,23 @@
 //! fabrum-platform-inkview. Built for the device by `zig build` into
 //! `zig-out/pocketbook/ReaderShell.app`.
 const std = @import("std");
+const builtin = @import("builtin");
 const inkview = @import("fabrum-platform-inkview");
 const ReaderShell = @import("ReaderShell.zig");
 
 pub const std_options: std.Options = .{ .log_level = .info };
+
+comptime {
+    if (builtin.os.tag == .linux and builtin.cpu.arch == .arm and builtin.abi == .gnueabi) {
+        // Zig 0.17 selects /dev/urandom for this libc target. The B288
+        // kernel has no getrandom; keep the example off that path.
+        if (!builtin.link_libc or
+            @TypeOf(std.posix.system.getrandom) != void or
+            @TypeOf(std.posix.system.arc4random_buf) != void or
+            !@hasField(std.Io.Threaded.RandomFile, "fd"))
+            @compileError("the device build must use std's /dev/urandom entropy path");
+    }
+}
 
 pub fn main(init: std.process.Init) !void {
     // the emulator's library lives wherever it was unpacked

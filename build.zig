@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     const mod = platformModule(b, target, optimize, .public);
 
     const test_step = b.step("test", "Run tests");
-    const app_step = b.step("app", "Cross-compile the example into " ++ app_name ++ ".app for a PocketBook B288 (arm-linux-gnueabi, glibc 2.38, Cortex-A7)");
+    const app_step = b.step("app", "Cross-compile the example into " ++ app_name ++ ".app for a PocketBook B288 (arm-linux-gnueabi, glibc 2.23, Cortex-A7)");
     const emulator_step = b.step("emulator", "Build the example for x86_64 Linux, to run against the SDK's emulator libinkview.so in a Debian 12 container");
 
     // This package's own tests and example bring their own fabrum, lazily,
@@ -35,15 +35,15 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(example_tests).step);
     }
 
-    // The device build: 32-bit ARMv7, soft-float EABI, glibc 2.38 dynamic
+    // The device build: 32-bit ARMv7, soft-float EABI, glibc 2.23 dynamic
     // (the firmware's loader is /lib/ld-linux.so.3), tuned for the
     // Cortex-A7. `libinkview.so` is loaded at run time, so nothing but
-    // glibc is linked.
+    // glibc and its pre-2.34 libpthread/libdl libraries are linked.
     const device = b.resolveTargetQuery(.{
         .cpu_arch = .arm,
         .os_tag = .linux,
         .abi = .gnueabi,
-        .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
+        .glibc_version = .{ .major = 2, .minor = 23, .patch = 0 },
         .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 },
     });
     if (exampleFor(b, device, .ReleaseSmall)) |exe| {
