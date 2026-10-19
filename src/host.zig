@@ -149,16 +149,12 @@ pub fn App(comptime Root: type) type {
         /// Redraw everything next time, with at least this refresh.
         stale: ?app.Refresh = null,
         frame_timer_armed: bool = false,
-        a2_timer_armed: bool = false,
         wake_pending: std.atomic.Value(bool) = .init(false),
-        exiting: bool = false,
         /// The modal requests under way, with what they own.
         open_dialog: ?Dialog = null,
         open_menu: ?Menu = null,
         open_keyboard: ?Keyboard = null,
         open_directory: ?Directory = null,
-        /// Frames run, for tests.
-        frame_count: usize = 0,
 
         const Self = @This();
 
@@ -261,7 +257,7 @@ pub fn App(comptime Root: type) type {
 
         // The handler
 
-        pub fn handler(kind: c_int, par1: c_int, par2: c_int) callconv(.c) c_int {
+        fn handler(kind: c_int, par1: c_int, par2: c_int) callconv(.c) c_int {
             const self = &instance;
             return self.handle(@fromBackingInt(kind), par1, par2) catch |err| {
                 log.err("event {d}: {t}", .{ kind, err });
@@ -313,15 +309,15 @@ pub fn App(comptime Root: type) type {
                 },
                 .pointer_down => {
                     self.pointer_down = true;
-                    taken = try self.runtime.mouse(.{ .position = self.point(par1, par2), .pressed = primary() });
+                    taken = try self.runtime.mouse(.{ .position = self.point(par1, par2), .pressed = primary_down });
                 },
                 .pointer_move, .pointer_drag => {
                     if (!self.pointer_down) return null;
-                    taken = try self.runtime.mouse(.{ .position = self.point(par1, par2), .pressed = primary() });
+                    taken = try self.runtime.mouse(.{ .position = self.point(par1, par2), .pressed = primary_down });
                 },
                 .pointer_long => {
                     if (!self.pointer_down) return null;
-                    taken = try self.runtime.mouse(.{ .position = self.point(par1, par2), .pressed = primary(), .long_press = true });
+                    taken = try self.runtime.mouse(.{ .position = self.point(par1, par2), .pressed = primary_down, .long_press = true });
                 },
                 .pointer_hold => return null,
                 .pointer_up => {
@@ -354,12 +350,8 @@ pub fn App(comptime Root: type) type {
                     taken = try self.runtime.key(.{ .key = key });
                     _ = try self.runtime.key(.{ .key = key, .phase = .release });
                 },
-                .exit => {
-                    // nothing can be refused here: the library is exiting
-                    self.exiting = true;
-                    return null;
-                },
-                .hide, .activate, .mt_sync, .update, .config_changed => return null,
+                // nothing can be refused at exit: the library is exiting
+                .exit, .hide, .activate, .mt_sync, .update, .config_changed => return null,
                 _ => {
                     if (@backingInt(event) != wake_event) return null;
                     self.wake_pending.store(false, .release);
@@ -405,7 +397,7 @@ pub fn App(comptime Root: type) type {
         fn readGeometry(self: *Self) !void {
             const width: u32 = @intCast(@max(self.api.ScreenWidth(), 0));
             var height: u32 = @intCast(@max(self.api.ScreenHeight(), 0));
-            if (self.options.panel == .shown) height -= @intCast(@min(@max(self.api.PanelHeight(), 0), height));
+            if (self.options.panel == .shown) height -|= @intCast(@max(self.api.PanelHeight(), 0));
             self.screen.width = width;
             self.screen.height = height;
             self.screen.canvas = null;
@@ -441,13 +433,14 @@ pub fn App(comptime Root: type) type {
             return .init(@as(f32, @floatFromInt(x)) / self.screen.scale, @as(f32, @floatFromInt(y)) / self.screen.scale);
         }
 
-        fn primary() app.MouseEvent.Buttons {
+        /// The primary button down: what a finger on the panel is.
+        const primary_down: app.MouseEvent.Buttons = blk: {
             var down: app.MouseEvent.Buttons = .empty;
             down.set(app.MouseEvent.primary);
-            return down;
-        }
+            break :blk down;
+        };
 
-        pub fn now(self: *const Self) Io.Timestamp {
+        fn now(self: *const Self) Io.Timestamp {
             if (self.options.clock) |clock| return clock();
             return Io.Clock.awake.now(self.io);
         }
@@ -491,7 +484,6 @@ pub fn App(comptime Root: type) type {
                     _ = try self.runtime.frame(Root, self.props, self.screen.viewport(), self.now());
                     count += 1;
                 }
-                self.frame_count += count;
                 if (count > 0) try self.present();
                 if (!self.deferred) break;
             }
@@ -500,7 +492,6 @@ pub fn App(comptime Root: type) type {
 
         /// Draws the damage of the last frames and refreshes it.
         fn present(self: *Self) !void {
-            try self.readGeometry();
             var regions = try self.runtime.damage();
             var hint = self.runtime.refresh();
             const whole: [1]Rect = .{.init(0, 0, self.screen.viewport().x, self.screen.viewport().y)};
@@ -576,12 +567,10 @@ pub fn App(comptime Root: type) type {
             const ms = self.millisUntil(due);
             // hard: the cleaning refresh must come even as the device dozes
             self.api.SetHardTimer("fabrum-a2", a2Timer, ms);
-            self.a2_timer_armed = true;
         }
 
         fn a2Timer() callconv(.c) void {
             const self = &instance;
-            self.a2_timer_armed = false;
             if (self.modal > 0) return;
             if (self.policy.idle(self.now())) |update| {
                 if (self.active) self.apply(update, &.{});
