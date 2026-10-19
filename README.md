@@ -9,8 +9,9 @@ InkView's own dialogs, menus and keyboard are the services.
 
 Written for the PocketBook Verse (model 629, Allwinner B288, firmware
 6.8–6.11), against the 6.10 SDK headers and
-[libinkview](../../libinkview/docs/README.md)'s documentation. **Nothing has
-run on hardware yet**: see "What needs the device".
+[libinkview](https://github.com/ssttevee/libinkview)'s
+[documentation](https://github.com/ssttevee/libinkview/blob/trunk/docs/README.md).
+**Nothing has run on hardware yet**: see "What needs the device".
 
 ## What it is
 
@@ -42,21 +43,37 @@ process when the app closes.
 | Fake | `src/fake.zig` | A fake InkView for tests: framebuffer, timers, modal UIs, the clock. |
 | Example | `src/example/` | `ReaderShell`, a stand-in for a manga reader's first screen, and its `main.zig`. |
 
-**fabrum is the app's.** In the app's `build.zig`, give this module (and the
-renderer inside it) the `fabrum` the app uses, built with `.platform = .none`:
+## Adding it to an app
+
+```sh
+zig fetch --save git+https://github.com/ssttevee/fabrum
+zig fetch --save git+https://github.com/ssttevee/fabrum-platform-inkview
+```
+
+**fabrum is the app's.** This package does not fetch fabrum for apps: in the
+app's `build.zig`, give this module (and the
+[z2d renderer](https://github.com/ssttevee/fabrum-renderer-z2d) inside it,
+which is this package's own dependency) the `fabrum` the app uses, built
+with `.platform = .none`, through `addFabrum`. Otherwise the program would
+hold two fabrum modules, the app's and the platform's, and fail to build.
 
 ```zig
+const fabrum_mod = b.dependency("fabrum", .{ .target = target, .optimize = optimize, .platform = .none }).module("fabrum");
 const inkview = b.dependency("fabrum_platform_inkview", .{ .target = target, .optimize = optimize });
 const platform = inkview.module("fabrum-platform-inkview");
 @import("fabrum_platform_inkview").addFabrum(platform, fabrum_mod);
+exe.root_module.addImport("fabrum", fabrum_mod);
 exe.root_module.addImport("fabrum-platform-inkview", platform);
 exe.root_module.link_libc = true; // dlopen
 ```
 
 ## Building for the Verse
 
-Zig 0.17.0. The sibling checkouts `../zig-layout` (fabrum, branch
-`hybrid`) and `../zig-fabrum-renderer-z2d` are path dependencies.
+Zig 0.17.0. The dependencies, [fabrum](https://github.com/ssttevee/fabrum)
+(`trunk`) and
+[fabrum-renderer-z2d](https://github.com/ssttevee/fabrum-renderer-z2d), are
+fetched from GitHub by `zig build`; fabrum lazily, since only this package's
+own tests and example need it (apps bring their own, above).
 
 ```sh
 zig build            # zig-out/pocketbook/ReaderShell.app and ReaderShell-log.app
@@ -235,8 +252,9 @@ emulator is only a `libinkview.so` (`sdk/6.10/B288/emulator-x86_64/` in
 libinkview) that draws into a GTK 2 window and needs Debian 12's libraries
 (ICU 72, jsoncpp), so it runs in a container, not on macOS: put the
 library on `LD_LIBRARY_PATH` or in `INKVIEW_LIBRARY`, run from a directory
-with the SDK's `system/` tree (fonts, config), per
-`libinkview/docs/building.md` §6.5. Not tried.
+with the SDK's `system/` tree (fonts, config), per libinkview's
+[building.md](https://github.com/ssttevee/libinkview/blob/trunk/docs/building.md)
+§6.5. Not tried.
 
 ## What needs the device
 
@@ -298,7 +316,7 @@ turns ask for `page` refreshes. The user's earlier attempt
 
 ## fabrum gaps found
 
-Found building this package, and fixed in fabrum's `hybrid` branch since:
+Found building this package, and fixed in fabrum since:
 
 - No touch pan to scroll a drawn scroll container: only the wheel, the
   scrollbar's thumb and `scrollTo` moved one, so the apps here declared
