@@ -37,27 +37,12 @@ pub const KeyMap = struct {
 
     pub const default: KeyMap = .{};
 
-    /// The fabrum key for a hardware key code, or null for keys the map
-    /// leaves to the library.
-    pub fn of(self: KeyMap, code: c_int) ?KeyEvent.Key {
-        return switch (@as(inkview.Key, @fromBackingInt(@intCast(code)))) {
-            .prev => self.prev,
-            .next => self.next,
-            .prev2 => self.prev2,
-            .next2 => self.next2,
-            .up => self.up,
-            .down => self.down,
-            .left => self.left,
-            .right => self.right,
-            .ok => self.ok,
-            .back => self.back,
-            .menu => self.menu,
-            .home => self.home,
-            .tab => self.tab,
-            .delete => self.delete,
-            .plus => self.plus,
-            .minus => self.minus,
-            .power => self.power,
+    /// The fabrum key for a hardware key, or null for keys the map leaves
+    /// to the library. Every named `inkview.Key` is a field here, which
+    /// the switch checks at compile time.
+    pub fn of(self: KeyMap, key: inkview.Key) ?KeyEvent.Key {
+        return switch (key) {
+            inline else => |tag| @field(self, @tagName(tag)),
             _ => null,
         };
     }
@@ -65,13 +50,13 @@ pub const KeyMap = struct {
 
 test "the page keys turn pages and the rest are left alone or named" {
     const map: KeyMap = .default;
-    try std.testing.expectEqual(KeyEvent.Key.page_up, map.of(24).?);
-    try std.testing.expectEqual(KeyEvent.Key.page_down, map.of(25).?);
-    try std.testing.expectEqual(KeyEvent.Key.page_down, map.of(@backingInt(inkview.Key.next2)).?);
-    try std.testing.expectEqual(KeyEvent.Key.enter, map.of(@backingInt(inkview.Key.ok)).?);
-    try std.testing.expectEqual(KeyEvent.Key{ .f = 10 }, map.of(@backingInt(inkview.Key.menu)).?);
-    try std.testing.expectEqual(@as(?KeyEvent.Key, null), map.of(@backingInt(inkview.Key.power)));
-    try std.testing.expectEqual(@as(?KeyEvent.Key, null), map.of(0x30));
+    try std.testing.expectEqual(KeyEvent.Key.page_up, map.of(.prev).?);
+    try std.testing.expectEqual(KeyEvent.Key.page_down, map.of(.next).?);
+    try std.testing.expectEqual(KeyEvent.Key.page_down, map.of(.next2).?);
+    try std.testing.expectEqual(KeyEvent.Key.enter, map.of(.ok).?);
+    try std.testing.expectEqual(KeyEvent.Key{ .f = 10 }, map.of(.menu).?);
+    try std.testing.expectEqual(@as(?KeyEvent.Key, null), map.of(.power));
+    try std.testing.expectEqual(@as(?KeyEvent.Key, null), map.of(@fromBackingInt(0x30)));
     const swapped: KeyMap = .{ .prev = .page_down, .next = .page_up };
-    try std.testing.expectEqual(KeyEvent.Key.page_down, swapped.of(24).?);
+    try std.testing.expectEqual(KeyEvent.Key.page_down, swapped.of(.prev).?);
 }

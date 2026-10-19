@@ -263,7 +263,7 @@ pub fn App(comptime Root: type) type {
 
         pub fn handler(kind: c_int, par1: c_int, par2: c_int) callconv(.c) c_int {
             const self = &instance;
-            return self.handle(@fromBackingInt(@intCast(kind)), par1, par2) catch |err| {
+            return self.handle(@fromBackingInt(kind), par1, par2) catch |err| {
                 log.err("event {d}: {t}", .{ kind, err });
                 return 0;
             };
@@ -337,11 +337,12 @@ pub fn App(comptime Root: type) type {
                     taken = true;
                 },
                 .key_press, .key_repeat, .key_release => {
-                    if (self.options.close_key) |close| if (par1 == @backingInt(close)) {
+                    const pressed: inkview.Key = @fromBackingInt(par1);
+                    if (pressed == self.options.close_key) {
                         if (event == .key_press and try self.runtime.shouldClose(.quit)) self.api.CloseApp();
                         return true;
-                    };
-                    const key = self.options.keys.of(par1) orelse return null;
+                    }
+                    const key = self.options.keys.of(pressed) orelse return null;
                     taken = try self.runtime.key(.{ .key = key, .phase = switch (event) {
                         .key_repeat => .repeat,
                         .key_release => .release,
