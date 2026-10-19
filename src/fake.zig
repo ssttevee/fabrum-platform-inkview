@@ -253,7 +253,8 @@ fn nextDue(until: i64) ?usize {
     var best: ?usize = null;
     for (state.timers.items, 0..) |t, i| {
         if (t.due_ms > until) continue;
-        if (best == null or t.due_ms < state.timers.items[best.?].due_ms) best = i;
+        if (best) |b| if (t.due_ms >= state.timers.items[b].due_ms) continue;
+        best = i;
     }
     return best;
 }
@@ -333,11 +334,15 @@ pub fn clearUpdates() void {
     state.updates.clearRetainingCapacity();
 }
 
-/// The kinds of the updates logged, in order.
-pub fn updateKinds(buffer: []Update.Kind) []Update.Kind {
-    const n = @min(buffer.len, state.updates.items.len);
-    for (state.updates.items[0..n], buffer[0..n]) |u, *k| k.* = u.kind;
-    return buffer[0..n];
+/// The kinds of the updates logged, in order (the first 64), good until
+/// the next call.
+pub fn kinds() []const Update.Kind {
+    const S = struct {
+        var buffer: [64]Update.Kind = undefined;
+    };
+    const n = @min(S.buffer.len, state.updates.items.len);
+    for (state.updates.items[0..n], S.buffer[0..n]) |u, *k| k.* = u.kind;
+    return S.buffer[0..n];
 }
 
 // The library's functions
@@ -357,6 +362,16 @@ fn CloseApp() callconv(.c) void {
 fn SendEvent(h: inkview.Handler, kind: c_int, par1: c_int, par2: c_int) callconv(.c) void {
     std.debug.assert(h == state.handler.?);
     state.queue.append(state.gpa, .{ .kind = kind, .par1 = par1, .par2 = par2 }) catch @panic("OOM");
+}
+
+/// The pixels under a modal UI, restored when it closes.
+fn saveScreen() []u8 {
+    return state.gpa.dupe(u8, state.framebuffer) catch @panic("OOM");
+}
+
+/// A copy of a C string, for the logs.
+fn dupe(s: [*:0]const u8) []u8 {
+    return state.gpa.dupe(u8, std.mem.span(s)) catch @panic("OOM");
 }
 
 fn setTimer(name: [*:0]const u8, proc: inkview.TimerProc, ms: c_int, hard: bool) void {
@@ -444,8 +459,8 @@ fn get_screen_dpi() callconv(.c) c_int {
 fn MessageFn(icon: inkview.DialogIcon, title: [*:0]const u8, text: [*:0]const u8, timeout: c_int) callconv(.c) void {
     state.messages.append(state.gpa, .{
         .icon = icon,
-        .title = state.gpa.dupe(u8, std.mem.span(title)) catch @panic("OOM"),
-        .text = state.gpa.dupe(u8, std.mem.span(text)) catch @panic("OOM"),
+        .title = dupe(title),
+        .text = dupe(text),
         .timeout = timeout,
     }) catch @panic("OOM");
     // 6.x pumps the loop while the box is up: timers fire
@@ -453,33 +468,32 @@ fn MessageFn(icon: inkview.DialogIcon, title: [*:0]const u8, text: [*:0]const u8
 }
 
 fn Dialog3(icon: inkview.DialogIcon, title: [*:0]const u8, text: [*:0]const u8, b1: ?[*:0]const u8, b2: ?[*:0]const u8, b3: ?[*:0]const u8, cb: inkview.DialogHandler) callconv(.c) void {
-    const gpa = state.gpa;
-    state.dialogs.append(gpa, .{
+    state.dialogs.append(state.gpa, .{
         .icon = icon,
-        .title = gpa.dupe(u8, std.mem.span(title)) catch @panic("OOM"),
-        .text = gpa.dupe(u8, std.mem.span(text)) catch @panic("OOM"),
+        .title = dupe(title),
+        .text = dupe(text),
         .buttons = .{
-            if (b1) |b| gpa.dupe(u8, std.mem.span(b)) catch @panic("OOM") else null,
-            if (b2) |b| gpa.dupe(u8, std.mem.span(b)) catch @panic("OOM") else null,
-            if (b3) |b| gpa.dupe(u8, std.mem.span(b)) catch @panic("OOM") else null,
+            if (b1) |b| dupe(b) else null,
+            if (b2) |b| dupe(b) else null,
+            if (b3) |b| dupe(b) else null,
         },
         .callback = cb,
-        .saved = gpa.dupe(u8, state.framebuffer) catch @panic("OOM"),
+        .saved = saveScreen(),
     }) catch @panic("OOM");
 }
 
 fn OpenMenu(items: [*]inkview.MenuItem, _: c_int, x: c_int, y: c_int, cb: inkview.MenuHandler) callconv(.c) void {
-    state.menus.append(state.gpa, .{ .items = items, .x = x, .y = y, .callback = cb, .saved = state.gpa.dupe(u8, state.framebuffer) catch @panic("OOM") }) catch @panic("OOM");
+    state.menus.append(state.gpa, .{ .items = items, .x = x, .y = y, .callback = cb, .saved = saveScreen() }) catch @panic("OOM");
 }
 
 fn OpenKeyboard(title: [*:0]const u8, buffer: [*:0]u8, maxlen: c_int, flags: inkview.KeyboardFlags, cb: inkview.KeyboardHandler) callconv(.c) void {
     state.keyboards.append(state.gpa, .{
-        .title = state.gpa.dupe(u8, std.mem.span(title)) catch @panic("OOM"),
+        .title = dupe(title),
         .buffer = buffer,
         .maxlen = maxlen,
         .flags = flags,
         .callback = cb,
-        .saved = state.gpa.dupe(u8, state.framebuffer) catch @panic("OOM"),
+        .saved = saveScreen(),
     }) catch @panic("OOM");
 }
 

@@ -30,7 +30,7 @@ const Probe = struct {
         choices: usize = 0,
         page: enum { list, settings } = .list,
         dir: ?[]u8 = null,
-        dir_error: ?anyerror = null,
+        dir_error: ?app.platform.Services.Error = null,
         ticks: usize = 0,
         list_focused: bool = false,
 
@@ -187,21 +187,28 @@ fn scale() f32 {
     return host().screen.scale;
 }
 
-/// Where `text` is on the panel, in pixels.
-fn locate(text: []const u8) !struct { x: c_int, y: c_int } {
-    const unit = app.testing.findText(Host.Runtime.Text, host().runtime.context(), text) orelse return error.NoSuchText;
-    const c = app.testing.center(unit);
-    return .{ .x = @intFromFloat(c.x * scale()), .y = @intFromFloat(c.y * scale()) };
+/// A place on the panel, in pixels.
+const Px = struct {
+    x: c_int,
+    y: c_int,
+
+    fn of(unit: *const layout.Unit) Px {
+        const c = app.testing.center(unit);
+        return .{ .x = @intFromFloat(c.x * scale()), .y = @intFromFloat(c.y * scale()) };
+    }
+};
+
+/// Where `text` is on the panel.
+fn locate(text: []const u8) !Px {
+    return .of(app.testing.findText(Host.Runtime.Text, host().runtime.context(), text) orelse return error.NoSuchText);
 }
 
 fn element(key: anytype) layout.Unit.Id {
     return app.testing.rootInstance(Probe).element(key);
 }
 
-fn locateElement(key: anytype) !struct { x: c_int, y: c_int } {
-    const unit = host().runtime.context().getUnitById(element(key)) orelse return error.NoSuchElement;
-    const c = app.testing.center(unit);
-    return .{ .x = @intFromFloat(c.x * scale()), .y = @intFromFloat(c.y * scale()) };
+fn locateElement(key: anytype) !Px {
+    return .of(host().runtime.context().getUnitById(element(key)) orelse return error.NoSuchElement);
 }
 
 fn tapText(text: []const u8) !void {
@@ -229,19 +236,12 @@ fn checkFramebuffer() !void {
     }
 }
 
-fn kinds() []fake.Update.Kind {
-    const S = struct {
-        var buffer: [64]fake.Update.Kind = undefined;
-    };
-    return fake.updateKinds(&S.buffer);
-}
-
 test "init sets the panel and orientation up, and show draws everything with one full update" {
     try start(.{});
     defer stop();
     try testing.expectEqual(inkview.PanelType.disabled, fake.state.panel_type);
     try testing.expectEqualSlices(inkview.Orientation, &.{.portrait}, fake.state.orientation_sets.items);
-    try testing.expectEqualSlices(fake.Update.Kind, &.{.full}, kinds());
+    try testing.expectEqualSlices(fake.Update.Kind, &.{.full}, fake.kinds());
     // 212 dpi over 96 points per inch
     try testing.expectApproxEqAbs(2.208, scale(), 0.01);
     const viewport = host().screen.viewport();
@@ -279,7 +279,7 @@ test "a pan scrolls the list with gray updates, then A2, then a cleaning full re
     const at = try locateElement("list");
     fake.drag(at.x, at.y + 150, at.x, at.y - 150, 6);
     try testing.expect(listOffset() > 100);
-    const k = kinds();
+    const k = fake.kinds();
     try testing.expect(k.len >= 4);
     try testing.expectEqual(fake.Update.Kind.dynamic, k[0]);
     try testing.expectEqual(fake.Update.Kind.dynamic, k[1]);
@@ -294,7 +294,7 @@ test "a pan scrolls the list with gray updates, then A2, then a cleaning full re
     fake.advance(699);
     try testing.expectEqual(0, fake.state.updates.items.len);
     fake.advance(1);
-    try testing.expectEqualSlices(fake.Update.Kind, &.{.full}, kinds());
+    try testing.expectEqualSlices(fake.Update.Kind, &.{.full}, fake.kinds());
     try testing.expectEqual(@as(?fake.Timer, null), fake.timer("fabrum-a2"));
 }
 
@@ -303,7 +303,7 @@ test "without A2 or dynamic updates in the library, a pan is gray or partial" {
     fake.clearUpdates();
     var at = try locateElement("list");
     fake.drag(at.x, at.y + 100, at.x, at.y - 100, 3);
-    for (kinds()) |k| try testing.expectEqual(fake.Update.Kind.dynamic, k);
+    for (fake.kinds()) |k| try testing.expectEqual(fake.Update.Kind.dynamic, k);
     try testing.expectEqual(@as(?fake.Timer, null), fake.timer("fabrum-a2"));
     stop();
 
@@ -312,7 +312,7 @@ test "without A2 or dynamic updates in the library, a pan is gray or partial" {
     fake.clearUpdates();
     at = try locateElement("list");
     fake.drag(at.x, at.y + 100, at.x, at.y - 100, 3);
-    for (kinds()) |k| try testing.expectEqual(fake.Update.Kind.partial, k);
+    for (fake.kinds()) |k| try testing.expectEqual(fake.Update.Kind.partial, k);
 }
 
 test "every nth non-flashing update is a full one, and the app can ask for one" {
@@ -323,13 +323,13 @@ test "every nth non-flashing update is a full one, and the app can ask for one" 
     fake.tap(at.x, at.y);
     fake.tap(at.x, at.y);
     fake.tap(at.x, at.y);
-    const k = kinds();
+    const k = fake.kinds();
     try testing.expectEqual(fake.Update.Kind.partial, k[0]);
     try testing.expectEqual(fake.Update.Kind.full, k[k.len - 1]);
     fake.clearUpdates();
     // the press shows the button pressed (partial), the click asks for a page
     try tapText("Full");
-    try testing.expectEqualSlices(fake.Update.Kind, &.{ .partial, .full }, kinds());
+    try testing.expectEqualSlices(fake.Update.Kind, &.{ .partial, .full }, fake.kinds());
 }
 
 test "tapping the field opens the system keyboard, whose text comes back into the field" {
@@ -354,7 +354,7 @@ test "tapping the field opens the system keyboard, whose text comes back into th
     try testing.expectEqualStrings("hello", probe().text.items);
     try testing.expect(app.testing.findText(Host.Runtime.Text, host().runtime.context(), "hello") != null);
     // the EVT_SHOW after the keyboard redraws and refreshes the whole screen
-    const k = kinds();
+    const k = fake.kinds();
     try testing.expectEqual(fake.Update.Kind.full, k[k.len - 1]);
     try checkFramebuffer();
 
@@ -412,7 +412,7 @@ test "frames are held while a dialog is up, and everything is redrawn after it c
     try testing.expectEqual(1, probe().picks);
     // the library's own full update on closing, then our quiet redraw of
     // the whole screen
-    const k = kinds();
+    const k = fake.kinds();
     try testing.expectEqual(2, k.len);
     try testing.expectEqual(fake.Update.Kind.full, k[0]);
     const last = fake.state.updates.items[1];
@@ -511,7 +511,7 @@ test "the page keys scroll the focused list; unmapped keys are left to the libra
     // the list alone
     fake.clearUpdates();
     _ = fake.pressKey(.next);
-    try testing.expectEqualSlices(fake.Update.Kind, &.{.partial}, kinds());
+    try testing.expectEqualSlices(fake.Update.Kind, &.{.partial}, fake.kinds());
     try testing.expect(fake.state.updates.items[0].h < fake.state.height);
     try checkFramebuffer();
 }
@@ -533,7 +533,7 @@ test "rotating re-lays out, redraws and refreshes the whole screen" {
     try testing.expectEqual(1024, host().screen.width);
     try testing.expectEqual(758, host().screen.height);
     try testing.expectApproxEqAbs(1024.0 / scale(), host().screen.viewport().x, 0.5);
-    try testing.expectEqualSlices(fake.Update.Kind, &.{.full}, kinds());
+    try testing.expectEqualSlices(fake.Update.Kind, &.{.full}, fake.kinds());
     try checkFramebuffer();
     // and the list is still there to tap
     const at = try locateElement(Probe.PickKey{ .pick = 0 });
@@ -551,7 +551,7 @@ test "coming back to the foreground redraws and refreshes; the background drops 
     try testing.expectEqual(1, probe().picks);
     try testing.expectEqual(0, fake.state.updates.items.len);
     _ = fake.send(.foreground, 0, 0);
-    const k = kinds();
+    const k = fake.kinds();
     try testing.expectEqual(1, k.len);
     try testing.expectEqual(fake.Update.Kind.partial, k[0]);
     try testing.expectEqual(fake.state.width, fake.state.updates.items[0].w);
