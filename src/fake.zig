@@ -107,8 +107,6 @@ pub const State = struct {
     orientation_sets: std.ArrayList(inkview.Orientation) = .empty,
     stretches: usize = 0,
     closed: bool = false,
-    /// What `IsUpdateInProcess` answers.
-    update_in_process: bool = false,
     /// How many times the handler was entered, for re-entrancy checks.
     depth: u32 = 0,
     max_depth: u32 = 0,
@@ -185,7 +183,6 @@ pub fn api() inkview.Api {
         .ScreenWidth = ScreenWidth,
         .ScreenHeight = ScreenHeight,
         .GetCanvas = GetCanvas,
-        .GetOrientation = GetOrientation,
         .SetOrientation = SetOrientation,
         .SetPanelType = SetPanelType,
         .PanelHeight = PanelHeight,
@@ -198,13 +195,8 @@ pub fn api() inkview.Api {
         .OpenKeyboard = OpenKeyboard,
         .DynamicUpdateA2 = if (state.options.has_a2) DynamicUpdateA2 else null,
         .DynamicUpdate = if (state.options.has_dynamic) DynamicUpdate else null,
-        .IsUpdateInProcess = IsUpdateInProcess,
         .get_screen_dpi = if (state.options.has_dpi) get_screen_dpi else null,
-        .PanelHeightFBOffset = null,
         .OpenDirectorySelector = if (state.options.has_directory_selector) OpenDirectorySelector else null,
-        .GetSoftwareVersion = null,
-        .GetDeviceModel = null,
-        .FlushEvents = null,
     };
 }
 
@@ -403,10 +395,6 @@ fn GetCanvas() callconv(.c) ?*inkview.Canvas {
     return &state.canvas;
 }
 
-fn GetOrientation() callconv(.c) inkview.Orientation {
-    return state.orientation;
-}
-
 fn SetOrientation(n: inkview.Orientation) callconv(.c) void {
     state.orientation_sets.append(state.gpa, n) catch @panic("OOM");
     const turned = n.isLandscape() != state.orientation.isLandscape();
@@ -447,10 +435,6 @@ fn DynamicUpdate(x: c_int, y: c_int, w: c_int, h: c_int) callconv(.c) void {
 
 fn DynamicUpdateA2(x: c_int, y: c_int, w: c_int, h: c_int) callconv(.c) void {
     logUpdate(.a2, x, y, w, h);
-}
-
-fn IsUpdateInProcess() callconv(.c) c_int {
-    return @intFromBool(state.update_in_process);
 }
 
 fn get_screen_dpi() callconv(.c) c_int {

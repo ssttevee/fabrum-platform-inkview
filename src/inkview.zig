@@ -216,7 +216,6 @@ pub const Api = struct {
     ScreenWidth: *const fn () callconv(.c) c_int,
     ScreenHeight: *const fn () callconv(.c) c_int,
     GetCanvas: *const fn () callconv(.c) ?*Canvas,
-    GetOrientation: *const fn () callconv(.c) Orientation,
     SetOrientation: *const fn (Orientation) callconv(.c) void,
     SetPanelType: *const fn (PanelType) callconv(.c) void,
     PanelHeight: *const fn () callconv(.c) c_int,
@@ -237,17 +236,10 @@ pub const Api = struct {
     /// `PartialUpdate`.
     DynamicUpdateA2: ?*const fn (c_int, c_int, c_int, c_int) callconv(.c) void = null,
     DynamicUpdate: ?*const fn (c_int, c_int, c_int, c_int) callconv(.c) void = null,
-    /// 5.19+. Without it the host never skips a frame for a busy panel.
-    IsUpdateInProcess: ?*const fn () callconv(.c) c_int = null,
     /// 5.14+. Without it the scale comes from `Options.dpi`.
     get_screen_dpi: ?*const fn () callconv(.c) c_int = null,
-    /// 6.5+: the panel's framebuffer shift when it is at the top.
-    PanelHeightFBOffset: ?*const fn () callconv(.c) c_int = null,
     /// Removed in 6.8: without it `openDirectory` is unsupported.
     OpenDirectorySelector: ?*const fn ([*:0]const u8, [*:0]u8, c_int, DirHandler) callconv(.c) void = null,
-    GetSoftwareVersion: ?*const fn () callconv(.c) ?[*:0]u8 = null,
-    GetDeviceModel: ?*const fn () callconv(.c) ?[*:0]u8 = null,
-    FlushEvents: ?*const fn () callconv(.c) void = null,
 
     pub const Error = error{ LibraryNotFound, MissingSymbol };
 
@@ -285,35 +277,18 @@ pub const Api = struct {
     }
 };
 
-test "the optional functions have defaults, the required ones don't" {
+test "the optional functions default to null, the required ones have no default" {
     const info = @typeInfo(Api).@"struct";
-    var optional: usize = 0;
-    inline for (info.field_types) |T| {
-        if (@typeInfo(T) == .optional) optional += 1;
+    inline for (info.field_types, info.field_attrs) |T, attrs| {
+        const optional = @typeInfo(T) == .optional;
+        if (attrs.default_value_ptr) |ptr| {
+            const default: *const T = @ptrCast(@alignCast(ptr));
+            try std.testing.expect(optional);
+            try std.testing.expectEqual(@as(T, null), default.*);
+        } else {
+            try std.testing.expect(!optional);
+        }
     }
-    try std.testing.expectEqual(9, optional);
-    try std.testing.expectEqual(@as(?*const fn () callconv(.c) c_int, null), (Api{
-        .InkViewMain = undefined,
-        .CloseApp = undefined,
-        .SendEvent = undefined,
-        .SetHardTimer = undefined,
-        .SetWeakTimer = undefined,
-        .ClearTimer = undefined,
-        .ScreenWidth = undefined,
-        .ScreenHeight = undefined,
-        .GetCanvas = undefined,
-        .GetOrientation = undefined,
-        .SetOrientation = undefined,
-        .SetPanelType = undefined,
-        .PanelHeight = undefined,
-        .Stretch = undefined,
-        .FullUpdate = undefined,
-        .PartialUpdate = undefined,
-        .Message = undefined,
-        .Dialog3 = undefined,
-        .OpenMenu = undefined,
-        .OpenKeyboard = undefined,
-    }).IsUpdateInProcess);
 }
 
 test "loading a library that isn't there fails cleanly" {

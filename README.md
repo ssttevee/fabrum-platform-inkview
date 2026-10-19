@@ -35,7 +35,7 @@ process when the app closes.
 
 | Piece | File | What it does |
 |---|---|---|
-| Bindings | `src/inkview.zig` | The 29 functions the host calls, typed; `Api.load` resolves them from `libinkview.so` with `std.DynLib` at start-up. Nothing of the SDK is linked. Required functions exist in every version since 5.2; optional ones (`DynamicUpdateA2`, `DynamicUpdate`, `IsUpdateInProcess`, `get_screen_dpi`, `PanelHeightFBOffset`, `OpenDirectorySelector`, `GetSoftwareVersion`, `GetDeviceModel`, `FlushEvents`) are null when a firmware lacks them and the host does without. |
+| Bindings | `src/inkview.zig` | The 23 functions the host calls, typed; `Api.load` resolves them from `libinkview.so` with `std.DynLib` at start-up. Nothing of the SDK is linked. Required functions exist in every version since 5.2; optional ones (`DynamicUpdateA2`, `DynamicUpdate`, `get_screen_dpi`, `OpenDirectorySelector`) are null when a firmware lacks them and the host does without. Adding a function is one field: the loader is generated from them. |
 | Host | `src/host.zig` | `App(Root)`: the handler, frames, the framebuffer, timers, the wake path for posts from other threads, the services. |
 | Refresh policy | `src/refresh.zig` | Hints to updates, with A2 hysteresis and a periodic cleaning refresh; a value with no InkView in it. |
 | Keys | `src/keys.zig` | `KeyMap`: which fabrum key each hardware key means. |
