@@ -267,13 +267,33 @@ pub fn App(comptime Root: type) type {
 
         /// Delivers the event to the runtime, then runs the frames due.
         fn handle(self: *Self, event: inkview.Event, par1: c_int, par2: c_int) !c_int {
-            std.debug.assert(!self.in_runtime);
+            if (self.in_runtime) return self.reentered(event);
             self.in_runtime = true;
             const result = self.dispatch(event, par1, par2);
             self.in_runtime = false;
             const taken = (try result) orelse return 0;
             try self.frames();
             return @intFromBool(taken);
+        }
+
+        /// An event delivered while the runtime is busy: `Message` pumps
+        /// the library's loop until its box goes, and the events sent to
+        /// this handler meanwhile (a post's wake, a repaint) arrive inside
+        /// the frame that called it. The frame under way runs again once
+        /// `Message` returns; nothing else can be taken now.
+        fn reentered(self: *Self, event: inkview.Event) c_int {
+            switch (event) {
+                .show, .repaint => self.stale = self.showRefresh(),
+                .foreground => {
+                    self.active = true;
+                    self.stale = self.showRefresh();
+                },
+                .background => self.active = false,
+                _ => if (@backingInt(event) == wake_event) self.wake_pending.store(false, .release) else return 0,
+                else => return 0,
+            }
+            self.deferred = true;
+            return 1;
         }
 
         /// What the event means to the runtime: whether the app took it,

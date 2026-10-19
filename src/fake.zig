@@ -487,7 +487,9 @@ fn MessageFn(icon: inkview.DialogIcon, title: [*:0]const u8, text: [*:0]const u8
         .text = dupe(text),
         .timeout = timeout,
     }) catch @panic("OOM");
-    // 6.x pumps the loop while the box is up: timers fire
+    // 6.x pumps the loop while the box is up: timers fire, and events sent
+    // to the app's handler are delivered to it (seen on a Verse with 6.8)
+    pump();
     advance(@max(timeout, 1));
 }
 
