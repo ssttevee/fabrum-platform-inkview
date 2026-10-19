@@ -199,13 +199,15 @@ sends `EVT_SHOW` on closing, which redraws and refreshes the whole screen;
 
 ## Tests
 
-`zig build test` runs 37 tests without a device:
+`zig build test` runs 38 tests without a device:
 
 - `refresh.zig`: hint sequences to updates: content/page, the A2
   hysteresis and exit, content during A2, missing functions, the periodic
   full.
 - `keys.zig`, `inkview.zig`: the key map, the loader failing cleanly, the
-  struct layouts.
+  struct layouts, the flag structs packing as the header's constants,
+  the optional functions defaulting to null.
+- `host.zig`: the keyboard flags for a request.
 - `host_test.zig`, the host driven by the fake InkView with a small
   reader component: init and show (panel, orientation, one full update);
   a tap's partial update covering the button; a pan's gray, A2 and
@@ -218,7 +220,7 @@ sends `EVT_SHOW` on closing, which redraws and refreshes the whole screen;
   weak; page keys and `EVT_NEXTPAGE`; the close key; rotation; background
   and foreground; a post from another thread coalesced into one wake;
   `openDirectory` with and without the symbol; a 24-bit framebuffer; the
-  panel's height; the scale from dpi and explicit; the keyboard flags.
+  panel's height; the scale from dpi and explicit.
   After every step that draws, the fake's framebuffer (rows padded past
   the width) is compared with a full redraw.
 - `ReaderShell.zig`, through `app.testing.Harness` with fabrum's fake
