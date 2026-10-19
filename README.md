@@ -138,7 +138,7 @@ them to 4 pixels itself).
 **Scale.** `Options.scale`, or the panel's dpi (`get_screen_dpi`, else
 `Options.dpi` = 212) over `points_per_inch` (96): 2.2 pixels per point on
 the Verse, so the theme's 13-point font is 29 pixels, about what the
-user's earlier reader drew at 24–32 px, and a 758×1024 panel is a
+earlier Clay-based reader drew at 24–32 px, and a 758×1024 panel is a
 343×464-point viewport. Pointer coordinates are divided by the same scale.
 
 **Orientation and panel.** `Options.orientation` (portrait by default) is
@@ -148,7 +148,7 @@ set at `EVT_INIT`; `EVT_ORIENTATION` (only delivered on 6.x with
 redraws. The status panel is hidden (`SetPanelType(PANEL_DISABLED)`) unless
 `Options.panel = .shown`, when the viewport leaves `PanelHeight()` out.
 
-**Before and after.** The user's earlier Clay-based reader redrew and
+**Before and after.** The earlier Clay-based reader redrew and
 `FullUpdate`d the whole screen on every repaint (a flash per tap). Here a
 tap on a button is a partial update of the button's rectangle, a pan is
 A2, and the flashes are the app's page turns and the periodic clean.
@@ -173,7 +173,7 @@ The handler returns 1 when the app took the event, so InkView's defaults
 
 Keys by default (`KeyMap`): both pairs of page keys are Page Up and Page
 Down (on the Verse the page keys arrive as `IV_KEY_PREV` 0x18 and
-`IV_KEY_NEXT` 0x19, which the user's earlier app saw as 24 and 25); the
+`IV_KEY_NEXT` 0x19, which the earlier reader saw as 24 and 25); the
 arrows are themselves; OK is Enter; Back is Escape (fabrum clears drawn
 focus with it) unless it is `Options.close_key`, which asks
 `Runtime.shouldClose` and then `CloseApp`; Menu is F10; Home and Power are
@@ -311,7 +311,7 @@ Risks:
 items would come from a Suwayomi server over `std.http.Client` on a
 fetching thread, posted to the component with a `Poster` (covers decoded
 to gray8 the same way); picking a chapter would open a reader page whose
-turns ask for `page` refreshes. The user's earlier attempt
+turns ask for `page` refreshes. The earlier attempt
 (`pocketbook-suwayomi-client`) has the GraphQL client to carry over.
 
 ## fabrum gaps found
