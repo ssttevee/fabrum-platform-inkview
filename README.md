@@ -11,7 +11,8 @@ Written for the PocketBook Verse (model 629, Allwinner B288), with one
 `.app` targeting firmware 6.8, 6.9 and 6.10–6.11, against the 6.10 SDK
 headers and [libinkview](https://github.com/ssttevee/libinkview)'s
 [documentation](https://github.com/ssttevee/libinkview/blob/trunk/docs/README.md).
-**Nothing has run on hardware yet**: see "What needs the device".
+**It has started and drawn on a Verse with firmware 6.8**; most of the
+device checks are still to do: see "What needs the device".
 
 ## What it is
 
@@ -304,8 +305,8 @@ with the SDK's `system/` tree (fonts, config), per libinkview's
 
 ## What needs the device
 
-Nothing has run on a PocketBook yet. The first run, with
-`ReaderShell-log.app`:
+Steps 1 and 2 passed on a Verse with firmware U629.6.8.4081; the rest
+haven't been tried yet. The first run, with `ReaderShell-log.app`:
 
 1. The app starts and the library loads: the log's first line after
    `starting` should be `screen 758x1024 px, scale 2.21, viewport 343x464
@@ -335,17 +336,18 @@ Risks:
 
 - **ABI and versions.** Built against the 6.10 headers' constants and
   struct layouts (`icanvas`, `imenu`, `irect` unchanged since 5.2). Needs
-  glibc 2.36 symbols: firmware 6.10 or later. The `dlopen` of a library
-  with an executable stack needs the tunable on 6.11.1480.
+  glibc 2.23 and its `libpthread`/`libdl` (see "Building for the Verse").
+  The `dlopen` of a library with an executable stack needs the tunable on
+  6.11.1480.
 - **A2 ghosting and legibility.** A2 thresholds grays; the full refresh on
   exit cleans up, but a page of gray text under a pan may be unreadable
   for the gesture. The policy can turn A2 off.
 - **Keyboard repaint.** Whether the library restores the pixels under the
   keyboard with `KBD_NOUPDATE_AFTER_CLOSE` set wasn't verified; the host
   redraws everything on the `EVT_SHOW` that follows either way.
-- **Entropy.** std's `Io` draws randomness from glibc's `arc4random_buf`,
-  which uses `getrandom` (absent on the B288 kernel) with a `/dev/urandom`
-  fallback; nothing in this package asks for it at start-up.
+- **Entropy and `statx`.** Below glibc 2.25 std reads `/dev/urandom`, and
+  nothing in this package asks for randomness; std's stat functions use
+  `statx`, which the 3.10 kernel lacks (see "Building for the Verse").
 - **zg on 32-bit.** fabrum's word segmentation uses its own rules on
   32-bit targets (zg's tables don't build there); graphemes are zg's.
 - **`Message` blocks** inside `update`; a 30-second message freezes the
