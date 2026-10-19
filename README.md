@@ -147,7 +147,10 @@ is a different target.
 3. On macOS run `dot_clean /Volumes/<reader>/applications` so that no
    `._ReaderShell.app` shows up as an app. Eject.
 4. Start *ReaderShell* (or *ReaderShell-log*) from the Applications list.
-   Back closes it.
+   Menu → Quit closes it, as does Back on readers that have the key (the
+   Verse has only Home, the two page keys and Power). Home leaves it
+   running in the background: start it again to return to it, and quit
+   it before copying a new build over it.
 
 Apps run as user `reader` with the current directory `/`; this package
 uses no relative paths.
@@ -319,7 +322,7 @@ Nothing has run on a PocketBook yet. The first run, with
    and white (A2), then one flash 0.7 s after lifting the finger that
    brings the grays back. If A2 leaves the list unreadable (grays
    thresholded), set `.refresh = .{ .interactive = .dynamic }`.
-5. The page keys scroll the list; Back closes the app.
+5. The page keys scroll the list; Back, where there is one, closes the app.
 6. A tap on the search field opens the system keyboard; OK puts the text
    in the field after one flash; Cancel changes nothing. If the keyboard
    area stays on the panel, `KBD_NOUPDATE_AFTER_CLOSE` plus our `EVT_SHOW`
