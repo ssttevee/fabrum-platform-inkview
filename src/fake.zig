@@ -32,10 +32,10 @@ pub const Timer = struct {
 
 pub const Event = struct { kind: c_int, par1: c_int, par2: c_int };
 
-pub const Message = struct { icon: c_int, title: []u8, text: []u8, timeout: c_int };
+pub const Message = struct { icon: inkview.DialogIcon, title: []u8, text: []u8, timeout: c_int };
 
 pub const Dialog = struct {
-    icon: c_int,
+    icon: inkview.DialogIcon,
     title: []u8,
     text: []u8,
     buttons: [3]?[]u8,
@@ -53,7 +53,7 @@ pub const Menu = struct {
     /// The entries of the top-level array.
     pub fn top(self: Menu) []inkview.MenuItem {
         var n: usize = 0;
-        while (self.items[n].type != 0) n += 1;
+        while (self.items[n].type != .end) n += 1;
         return self.items[0..n];
     }
 };
@@ -62,7 +62,7 @@ pub const Keyboard = struct {
     title: []u8,
     buffer: [*:0]u8,
     maxlen: c_int,
-    flags: c_int,
+    flags: inkview.KeyboardFlags,
     callback: inkview.KeyboardHandler,
     saved: []u8,
 };
@@ -89,8 +89,8 @@ pub const State = struct {
     /// The screen's size in the current orientation.
     width: c_int,
     height: c_int,
-    orientation: c_int = 0,
-    panel_type: c_int = inkview.panel.enabled,
+    orientation: inkview.Orientation = .portrait,
+    panel_type: inkview.PanelType = .{ .enabled = true },
     framebuffer: []u8 = &.{},
     canvas: inkview.Canvas = undefined,
     handler: ?inkview.Handler = null,
@@ -104,7 +104,7 @@ pub const State = struct {
     menus: std.ArrayList(Menu) = .empty,
     keyboards: std.ArrayList(Keyboard) = .empty,
     directory_requests: usize = 0,
-    orientation_sets: std.ArrayList(c_int) = .empty,
+    orientation_sets: std.ArrayList(inkview.Orientation) = .empty,
     stretches: usize = 0,
     closed: bool = false,
     /// What `IsUpdateInProcess` answers.
@@ -306,7 +306,7 @@ pub fn keyboardResult(text: ?[]const u8) void {
     const k = state.keyboards.orderedRemove(0);
     defer freeKeyboard(k);
     @memcpy(state.framebuffer, k.saved);
-    if (k.flags & inkview.kbd.no_update_after_close == 0) state.updates.append(state.gpa, .{ .kind = .full }) catch @panic("OOM");
+    if (!k.flags.no_update_after_close) state.updates.append(state.gpa, .{ .kind = .full }) catch @panic("OOM");
     if (text) |t| {
         const max: usize = @intCast(k.maxlen);
         const n = @min(t.len, max);
@@ -316,13 +316,13 @@ pub fn keyboardResult(text: ?[]const u8) void {
     } else {
         k.callback(null);
     }
-    if (k.flags & inkview.kbd.no_evt_show == 0) _ = send(.show, 0, 0);
+    if (!k.flags.no_evt_show) _ = send(.show, 0, 0);
 }
 
 /// The g-sensor turned the device: the library rotates the screen when
 /// the app sets the orientation.
-pub fn rotate(orientation: c_int) void {
-    _ = send(.orientation, orientation, 0);
+pub fn rotate(orientation: inkview.Orientation) void {
+    _ = send(.orientation, @backingInt(orientation), 0);
 }
 
 /// The whole framebuffer's pixel rows, `width` wide, for comparisons.
@@ -403,27 +403,26 @@ fn GetCanvas() callconv(.c) ?*inkview.Canvas {
     return &state.canvas;
 }
 
-fn GetOrientation() callconv(.c) c_int {
+fn GetOrientation() callconv(.c) inkview.Orientation {
     return state.orientation;
 }
 
-fn SetOrientation(n: c_int) callconv(.c) void {
+fn SetOrientation(n: inkview.Orientation) callconv(.c) void {
     state.orientation_sets.append(state.gpa, n) catch @panic("OOM");
-    const landscape = n == 1 or n == 2;
-    const was = state.orientation == 1 or state.orientation == 2;
+    const turned = n.isLandscape() != state.orientation.isLandscape();
     state.orientation = n;
-    if (landscape != was) {
+    if (turned) {
         std.mem.swap(c_int, &state.width, &state.height);
         layoutFramebuffer() catch @panic("OOM");
     }
 }
 
-fn SetPanelType(t: c_int) callconv(.c) void {
+fn SetPanelType(t: inkview.PanelType) callconv(.c) void {
     state.panel_type = t;
 }
 
 fn PanelHeight() callconv(.c) c_int {
-    return if (state.panel_type == 0) 0 else state.options.panel_height;
+    return if (state.panel_type.enabled) state.options.panel_height else 0;
 }
 
 fn Stretch(_: [*]const u8, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int) callconv(.c) void {
@@ -458,7 +457,7 @@ fn get_screen_dpi() callconv(.c) c_int {
     return state.options.dpi;
 }
 
-fn MessageFn(icon: c_int, title: [*:0]const u8, text: [*:0]const u8, timeout: c_int) callconv(.c) void {
+fn MessageFn(icon: inkview.DialogIcon, title: [*:0]const u8, text: [*:0]const u8, timeout: c_int) callconv(.c) void {
     state.messages.append(state.gpa, .{
         .icon = icon,
         .title = state.gpa.dupe(u8, std.mem.span(title)) catch @panic("OOM"),
@@ -469,7 +468,7 @@ fn MessageFn(icon: c_int, title: [*:0]const u8, text: [*:0]const u8, timeout: c_
     advance(@max(timeout, 1));
 }
 
-fn Dialog3(icon: c_int, title: [*:0]const u8, text: [*:0]const u8, b1: ?[*:0]const u8, b2: ?[*:0]const u8, b3: ?[*:0]const u8, cb: inkview.DialogHandler) callconv(.c) void {
+fn Dialog3(icon: inkview.DialogIcon, title: [*:0]const u8, text: [*:0]const u8, b1: ?[*:0]const u8, b2: ?[*:0]const u8, b3: ?[*:0]const u8, cb: inkview.DialogHandler) callconv(.c) void {
     const gpa = state.gpa;
     state.dialogs.append(gpa, .{
         .icon = icon,
@@ -489,7 +488,7 @@ fn OpenMenu(items: [*]inkview.MenuItem, _: c_int, x: c_int, y: c_int, cb: inkvie
     state.menus.append(state.gpa, .{ .items = items, .x = x, .y = y, .callback = cb, .saved = state.gpa.dupe(u8, state.framebuffer) catch @panic("OOM") }) catch @panic("OOM");
 }
 
-fn OpenKeyboard(title: [*:0]const u8, buffer: [*:0]u8, maxlen: c_int, flags: c_int, cb: inkview.KeyboardHandler) callconv(.c) void {
+fn OpenKeyboard(title: [*:0]const u8, buffer: [*:0]u8, maxlen: c_int, flags: inkview.KeyboardFlags, cb: inkview.KeyboardHandler) callconv(.c) void {
     state.keyboards.append(state.gpa, .{
         .title = state.gpa.dupe(u8, std.mem.span(title)) catch @panic("OOM"),
         .buffer = buffer,

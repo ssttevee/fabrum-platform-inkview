@@ -307,7 +307,7 @@ pub fn App(comptime Root: type) type {
                     return true;
                 },
                 .orientation => {
-                    self.api.SetOrientation(par1);
+                    self.api.SetOrientation(@fromBackingInt(par1));
                     self.stale = .page;
                     return true;
                 },
@@ -372,10 +372,10 @@ pub fn App(comptime Root: type) type {
         /// `EVT_INIT`: the screen is open, so its geometry can be read.
         fn start(self: *Self) !void {
             self.api.SetPanelType(switch (self.options.panel) {
-                .hidden => inkview.panel.disabled,
-                .shown => inkview.panel.enabled,
+                .hidden => .disabled,
+                .shown => .{ .enabled = true },
             });
-            if (self.options.orientation) |o| self.api.SetOrientation(@backingInt(o));
+            if (self.options.orientation) |o| self.api.SetOrientation(o);
             self.screen.scale = self.options.scale orelse blk: {
                 var dpi: f32 = @floatFromInt(self.options.dpi);
                 if (self.api.get_screen_dpi) |f| {
@@ -614,12 +614,12 @@ pub fn App(comptime Root: type) type {
 
         const Error = app.platform.Services.Error;
 
-        fn iconOf(kind: app.platform.DialogKind) c_int {
+        fn iconOf(kind: app.platform.DialogKind) inkview.DialogIcon.Kind {
             return switch (kind) {
-                .info => inkview.icon.information,
-                .question => inkview.icon.question,
-                .warning => inkview.icon.warning,
-                .@"error" => inkview.icon.@"error",
+                .info => .information,
+                .question => .question,
+                .warning => .warning,
+                .@"error" => .@"error",
             };
         }
 
@@ -631,7 +631,7 @@ pub fn App(comptime Root: type) type {
             defer self.gpa.free(title);
             const text = try dupeZ(self.gpa, request.text);
             defer self.gpa.free(text);
-            self.api.Message(iconOf(request.kind), title, text, @intCast(@min(request.timeout_ms, std.math.maxInt(c_int))));
+            self.api.Message(.{ .kind = iconOf(request.kind) }, title, text, @intCast(@min(request.timeout_ms, std.math.maxInt(c_int))));
         }
 
         /// `Dialog3`: one at a time; answered 1–3 or -1 when dismissed.
@@ -645,7 +645,7 @@ pub fn App(comptime Root: type) type {
             for (request.buttons[0..@min(request.buttons.len, 3)], 2..) |label, i| d.strings[i] = try dupeZ(self.gpa, label);
             self.open_dialog = d;
             self.modal += 1;
-            const icon = iconOf(request.kind) | inkview.icon.def_button[@min(request.default, 2)] | inkview.icon.hw_button;
+            const icon: inkview.DialogIcon = .{ .kind = iconOf(request.kind), .default = @fromBackingInt(@as(u2, @intCast(@min(request.default, 2)))), .hw_button = true };
             self.api.Dialog3(icon, d.strings[0].?, d.strings[1].?, ptrOf(d.strings[2]), ptrOf(d.strings[3]), ptrOf(d.strings[4]), dialogAnswered);
         }
 
@@ -692,10 +692,10 @@ pub fn App(comptime Root: type) type {
                 if (m.ids.items.len > std.math.maxInt(c_short)) return error.ServiceFailed;
                 entry.* = .{
                     .type = switch (item.kind) {
-                        .item => if (item.enabled) inkview.item.active else inkview.item.inactive,
-                        .header => inkview.item.header,
-                        .separator => inkview.item.separator,
-                        .submenu => inkview.item.submenu,
+                        .item => if (item.enabled) .active else .inactive,
+                        .header => .header,
+                        .separator => .separator,
+                        .submenu => .submenu,
                     },
                     .index = @intCast(m.ids.items.len),
                     .text = text.ptr,
@@ -744,11 +744,13 @@ pub fn App(comptime Root: type) type {
         /// numeric or password layouts; the text is appended to rather
         /// than replaced; the closing refresh is left to the `EVT_SHOW`
         /// that follows.
-        pub fn keyboardFlags(flags: app.platform.TextRequest.Flags) c_int {
-            var f: c_int = if (flags.numeric) inkview.kbd.numeric else if (flags.url or flags.email) inkview.kbd.url else inkview.kbd.normal;
-            if (flags.password) f |= inkview.kbd.password;
-            f |= inkview.kbd.noselect | inkview.kbd.no_update_after_close;
-            return f;
+        fn keyboardFlags(flags: app.platform.TextRequest.Flags) inkview.KeyboardFlags {
+            return .{
+                .layout = if (flags.numeric) .numeric else if (flags.url or flags.email) .url else .normal,
+                .password = flags.password,
+                .noselect = true,
+                .no_update_after_close = true,
+            };
         }
 
         fn keyboardClosed(text: ?[*:0]u8) callconv(.c) void {
@@ -812,4 +814,21 @@ pub fn App(comptime Root: type) type {
             self.api.CloseApp();
         }
     };
+}
+
+test "the keyboard flags follow the request" {
+    const flags = App(struct {
+        pub const State = struct {};
+        pub const Msg = union(enum) { none };
+        pub const Props = struct {};
+        pub fn update(_: *State, _: Msg, _: *app.Update(@This())) !void {}
+        pub fn view(_: *app.Ui, _: *const State, _: Props) !void {}
+    }).keyboardFlags;
+    try std.testing.expectEqual(.normal, flags(.{}).layout);
+    try std.testing.expectEqual(.url, flags(.{ .url = true }).layout);
+    try std.testing.expectEqual(.url, flags(.{ .email = true }).layout);
+    try std.testing.expectEqual(.numeric, flags(.{ .numeric = true }).layout);
+    try std.testing.expect(flags(.{ .password = true }).password);
+    try std.testing.expect(!flags(.{}).password);
+    try std.testing.expect(flags(.{}).noselect and flags(.{}).no_update_after_close);
 }

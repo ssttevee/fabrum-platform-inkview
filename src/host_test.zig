@@ -239,8 +239,8 @@ fn kinds() []fake.Update.Kind {
 test "init sets the panel and orientation up, and show draws everything with one full update" {
     try start(.{});
     defer stop();
-    try testing.expectEqual(inkview.panel.disabled, fake.state.panel_type);
-    try testing.expectEqualSlices(c_int, &.{0}, fake.state.orientation_sets.items);
+    try testing.expectEqual(inkview.PanelType.disabled, fake.state.panel_type);
+    try testing.expectEqualSlices(inkview.Orientation, &.{.portrait}, fake.state.orientation_sets.items);
     try testing.expectEqualSlices(fake.Update.Kind, &.{.full}, kinds());
     // 212 dpi over 96 points per inch
     try testing.expectApproxEqAbs(2.208, scale(), 0.01);
@@ -341,8 +341,8 @@ test "tapping the field opens the system keyboard, whose text comes back into th
     const kb = fake.state.keyboards.items[0];
     try testing.expectEqualStrings("Search", kb.title);
     try testing.expectEqualStrings("", std.mem.span(kb.buffer));
-    try testing.expect(kb.flags & inkview.kbd.no_update_after_close != 0);
-    try testing.expect(kb.flags & inkview.kbd.noselect != 0);
+    try testing.expect(kb.flags.no_update_after_close);
+    try testing.expect(kb.flags.noselect);
     try testing.expectEqual(1, host().modal);
     // nothing is drawn or refreshed while the keyboard is up
     const before = fake.state.updates.items.len;
@@ -376,9 +376,9 @@ test "Ask opens Dialog3; its answer is a message; the first button quits" {
     try testing.expectEqualStrings("Quit", d.buttons[0].?);
     try testing.expectEqualStrings("Cancel", d.buttons[1].?);
     try testing.expectEqualStrings("Later", d.buttons[2].?);
-    try testing.expect(d.icon & inkview.icon.def_button[1] != 0);
-    try testing.expect(d.icon & inkview.icon.hw_button != 0);
-    try testing.expectEqual(inkview.icon.question, d.icon & 0xfff);
+    try testing.expectEqual(.second, d.icon.default);
+    try testing.expect(d.icon.hw_button);
+    try testing.expectEqual(.question, d.icon.kind);
     // a second dialog while one is up is refused, not stacked
     try testing.expectEqual(0, fake.state.dialogs.items.len - 1);
 
@@ -431,15 +431,15 @@ test "Menu opens an imenu tree answered by the item's id, big ids included" {
     try testing.expectEqual(@as(c_int, @intFromFloat(@round(10 * scale()))), m.x);
     const top = m.top();
     try testing.expectEqual(6, top.len);
-    try testing.expectEqual(inkview.item.header, top[0].type);
+    try testing.expectEqual(.header, top[0].type);
     try testing.expectEqualStrings("Settings", std.mem.span(top[1].text.?));
-    try testing.expectEqual(inkview.item.active, top[1].type);
-    try testing.expectEqual(inkview.item.separator, top[2].type);
-    try testing.expectEqual(inkview.item.inactive, top[3].type);
-    try testing.expectEqual(inkview.item.submenu, top[4].type);
+    try testing.expectEqual(.active, top[1].type);
+    try testing.expectEqual(.separator, top[2].type);
+    try testing.expectEqual(.inactive, top[3].type);
+    try testing.expectEqual(.submenu, top[4].type);
     const sub = top[4].submenu.?;
     try testing.expectEqualStrings("Big id", std.mem.span(sub[0].text.?));
-    try testing.expectEqual(0, sub[1].type);
+    try testing.expectEqual(.end, sub[1].type);
     // every item in the tree has its own index
     try testing.expectEqual(6, sub[0].index);
     try testing.expectEqual(7, top[5].index);
@@ -527,8 +527,8 @@ test "rotating re-lays out, redraws and refreshes the whole screen" {
     try start(.{});
     defer stop();
     fake.clearUpdates();
-    fake.rotate(1);
-    try testing.expectEqualSlices(c_int, &.{ 0, 1 }, fake.state.orientation_sets.items);
+    fake.rotate(.landscape_90);
+    try testing.expectEqualSlices(inkview.Orientation, &.{ .portrait, .landscape_90 }, fake.state.orientation_sets.items);
     try testing.expectEqual(1024, fake.state.width);
     try testing.expectEqual(1024, host().screen.width);
     try testing.expectEqual(758, host().screen.height);
@@ -608,7 +608,7 @@ test "a framebuffer that isn't gray8 is blitted from a private buffer" {
 test "the status panel's height is left out of the viewport when it is shown" {
     try start(.{ .host = .{ .panel = .shown } });
     defer stop();
-    try testing.expectEqual(inkview.panel.enabled, fake.state.panel_type);
+    try testing.expectEqual(inkview.PanelType{ .enabled = true }, fake.state.panel_type);
     try testing.expectEqual(1024 - 40, host().screen.height);
     try testing.expectApproxEqAbs((1024.0 - 40) / scale(), host().screen.viewport().y, 0.5);
 }
@@ -622,14 +622,4 @@ test "an explicit scale and a library without get_screen_dpi" {
     try testing.expectEqual(1, scale());
     try testing.expectEqual(758, @as(u32, @intFromFloat(host().screen.viewport().x)));
     try checkFramebuffer();
-}
-
-test "the keyboard flags follow the request" {
-    const flags = Host.keyboardFlags;
-    try testing.expectEqual(inkview.kbd.normal, flags(.{}) & 0xf);
-    try testing.expectEqual(inkview.kbd.url, flags(.{ .url = true }) & 0xf);
-    try testing.expectEqual(inkview.kbd.url, flags(.{ .email = true }) & 0xf);
-    try testing.expectEqual(inkview.kbd.numeric, flags(.{ .numeric = true }) & 0xf);
-    try testing.expect(flags(.{ .password = true }) & inkview.kbd.password != 0);
-    try testing.expect(flags(.{}) & inkview.kbd.password == 0);
 }

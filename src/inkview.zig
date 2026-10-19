@@ -43,14 +43,27 @@ pub const Canvas = extern struct {
     addr: ?[*]u8,
 };
 
-/// `imenu`: one entry of a popup menu; an array ends with `type == 0`.
+/// `imenu`: one entry of a popup menu; an array ends with `type == .end`.
 pub const MenuItem = extern struct {
-    type: c_short,
+    type: Type,
     index: c_short,
     text: ?[*:0]u8,
     submenu: ?[*]MenuItem,
 
-    pub const end: MenuItem = .{ .type = 0, .index = 0, .text = null, .submenu = null };
+    /// `ITEM_*`: what an entry is. Non-exhaustive: the header has style
+    /// bits above `ITEM_TYPEMASK` the host never sets.
+    pub const Type = enum(c_short) {
+        end = 0,
+        header = 1,
+        active = 2,
+        inactive = 3,
+        submenu = 5,
+        separator = 6,
+        bullet = 7,
+        _,
+    };
+
+    pub const end: MenuItem = .{ .type = .end, .index = 0, .text = null, .submenu = null };
 };
 
 /// `EVT_*`: what the handler is called with. Non-exhaustive: the library
@@ -117,55 +130,70 @@ pub const Orientation = enum(c_int) {
     landscape_270 = 2,
     portrait_180 = 3,
     _,
+
+    /// Whether the screen is wider than it is tall.
+    pub fn isLandscape(o: Orientation) bool {
+        return o == .landscape_90 or o == .landscape_270;
+    }
 };
 
-/// The `icon` argument of `Message` and `Dialog3`.
-pub const icon = struct {
-    pub const information: c_int = 1;
-    pub const question: c_int = 2;
-    pub const warning: c_int = 3;
-    pub const @"error": c_int = 4;
-    /// The button highlighted first: `def_button[n]` for button n.
-    pub const def_button = [_]c_int{ 0, 0x1000, 0x2000 };
+/// The `icon` argument of `Message` and `Dialog3`: `ICON_*` in the low
+/// bits, `DEF_BUTTONn`, `NO_DISMISS` and `DLG_HW_BUTTON` above.
+pub const DialogIcon = packed struct(u32) {
+    kind: Kind,
+    /// The button highlighted first.
+    default: enum(u2) { first = 0, second = 1, third = 2 } = .first,
+    _reserved: u1 = 0,
     /// Don't restore the screen under the dialog when it closes.
-    pub const no_dismiss: c_int = 0x8000;
+    no_dismiss: bool = false,
     /// Let the page keys press the first and last buttons on touch devices.
-    pub const hw_button: c_int = 0x10000;
-};
+    hw_button: bool = false,
+    _padding: u15 = 0,
 
-/// `ITEM_*`: menu item types.
-pub const item = struct {
-    pub const header: c_short = 1;
-    pub const active: c_short = 2;
-    pub const inactive: c_short = 3;
-    pub const submenu: c_short = 5;
-    pub const separator: c_short = 6;
-    pub const bullet: c_short = 7;
+    pub const Kind = enum(u12) {
+        information = 1,
+        question = 2,
+        warning = 3,
+        @"error" = 4,
+        _,
+    };
 };
 
 /// `KBD_*`: `OpenKeyboard` flags: one layout in the low nibble, options
 /// above.
-pub const kbd = struct {
-    pub const normal: c_int = 0;
-    pub const entext: c_int = 1;
-    pub const numeric: c_int = 4;
-    pub const url: c_int = 7;
-    pub const password: c_int = 0x100;
+pub const KeyboardFlags = packed struct(u32) {
+    layout: Layout = .normal,
+    _reserved: u4 = 0,
+    password: bool = false,
     /// Typing appends to the initial text instead of replacing it.
-    pub const noselect: c_int = 0x200;
+    noselect: bool = false,
+    _reserved2: u2 = 0,
     /// No `EVT_SHOW` to the restored handler when the keyboard closes.
-    pub const no_evt_show: c_int = 0x1000;
+    no_evt_show: bool = false,
+    _reserved3: u3 = 0,
     /// No screen refresh when the keyboard closes.
-    pub const no_update_after_close: c_int = 0x10000;
+    no_update_after_close: bool = false,
+    _padding: u15 = 0,
+
+    pub const Layout = enum(u4) {
+        normal = 0,
+        entext = 1,
+        numeric = 4,
+        url = 7,
+        _,
+    };
 };
 
-/// `PANEL_*`: `SetPanelType` values.
-pub const panel = struct {
-    pub const disabled: c_int = 0;
-    pub const enabled: c_int = 1 << 1;
-    pub const event_no_handling: c_int = 1 << 2;
-    pub const no_fb_offset: c_int = 1 << 3;
-    pub const no_self_update: c_int = 1 << 4;
+/// `PANEL_*`: `SetPanelType` flags; all clear is `PANEL_DISABLED`.
+pub const PanelType = packed struct(u32) {
+    _reserved: u1 = 0,
+    enabled: bool = false,
+    event_no_handling: bool = false,
+    no_fb_offset: bool = false,
+    no_self_update: bool = false,
+    _padding: u27 = 0,
+
+    pub const disabled: PanelType = .{};
 };
 
 /// `IMAGE_GRAY8`: `Stretch`'s source format for one gray byte per pixel.
@@ -188,9 +216,9 @@ pub const Api = struct {
     ScreenWidth: *const fn () callconv(.c) c_int,
     ScreenHeight: *const fn () callconv(.c) c_int,
     GetCanvas: *const fn () callconv(.c) ?*Canvas,
-    GetOrientation: *const fn () callconv(.c) c_int,
-    SetOrientation: *const fn (c_int) callconv(.c) void,
-    SetPanelType: *const fn (c_int) callconv(.c) void,
+    GetOrientation: *const fn () callconv(.c) Orientation,
+    SetOrientation: *const fn (Orientation) callconv(.c) void,
+    SetPanelType: *const fn (PanelType) callconv(.c) void,
     PanelHeight: *const fn () callconv(.c) c_int,
     Stretch: *const fn ([*]const u8, c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int) callconv(.c) void,
 
@@ -199,10 +227,10 @@ pub const Api = struct {
     PartialUpdate: *const fn (c_int, c_int, c_int, c_int) callconv(.c) void,
 
     // services
-    Message: *const fn (c_int, [*:0]const u8, [*:0]const u8, c_int) callconv(.c) void,
-    Dialog3: *const fn (c_int, [*:0]const u8, [*:0]const u8, ?[*:0]const u8, ?[*:0]const u8, ?[*:0]const u8, DialogHandler) callconv(.c) void,
+    Message: *const fn (DialogIcon, [*:0]const u8, [*:0]const u8, c_int) callconv(.c) void,
+    Dialog3: *const fn (DialogIcon, [*:0]const u8, [*:0]const u8, ?[*:0]const u8, ?[*:0]const u8, ?[*:0]const u8, DialogHandler) callconv(.c) void,
     OpenMenu: *const fn ([*]MenuItem, c_int, c_int, c_int, MenuHandler) callconv(.c) void,
-    OpenKeyboard: *const fn ([*:0]const u8, [*:0]u8, c_int, c_int, KeyboardHandler) callconv(.c) void,
+    OpenKeyboard: *const fn ([*:0]const u8, [*:0]u8, c_int, KeyboardFlags, KeyboardHandler) callconv(.c) void,
 
     // optional
     /// Without it, `interactive` refreshes use `DynamicUpdate` or
@@ -297,4 +325,13 @@ test "the struct layouts match the C headers" {
     try std.testing.expectEqual(@as(usize, if (@sizeOf(usize) == 8) 24 else 12), @sizeOf(MenuItem));
     try std.testing.expectEqual(24, @backingInt(Key.prev));
     try std.testing.expectEqual(25, @backingInt(Key.next));
+}
+
+test "the flag structs pack as the header's constants" {
+    // ICON_QUESTION | DEF_BUTTON2 | DLG_HW_BUTTON
+    try std.testing.expectEqual(2 | 0x1000 | 0x10000, @as(u32, @bitCast(DialogIcon{ .kind = .question, .default = .second, .hw_button = true })));
+    // KBD_URL | KBD_PASSWORD | KBD_NOSELECT | KBD_NOUPDATE_AFTER_CLOSE
+    try std.testing.expectEqual(7 | 0x100 | 0x200 | 0x10000, @as(u32, @bitCast(KeyboardFlags{ .layout = .url, .password = true, .noselect = true, .no_update_after_close = true })));
+    try std.testing.expectEqual(0, @as(u32, @bitCast(PanelType.disabled)));
+    try std.testing.expectEqual(1 << 1, @as(u32, @bitCast(PanelType{ .enabled = true })));
 }
