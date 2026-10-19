@@ -185,9 +185,9 @@ pub fn App(comptime Root: type) type {
         };
         const Menu = struct {
             reply: app.platform.IndexReply,
-            /// Every array of the tree, the top one first.
-            arrays: std.ArrayList([]inkview.MenuItem),
-            strings: std.ArrayList([:0]u8),
+            /// The `imenu` tree, its strings and `ids`: one arena, freed
+            /// when the menu is answered.
+            arena: std.heap.ArenaAllocator,
             /// The `MenuItem.id` of item `index - 1`.
             ids: std.ArrayList(usize),
         };
@@ -240,7 +240,7 @@ pub fn App(comptime Root: type) type {
             self.renderer.deinit();
             self.gpa.free(self.screen.private);
             if (self.open_dialog) |*d| self.freeDialog(d);
-            if (self.open_menu) |*m| self.freeMenu(m);
+            if (self.open_menu) |*m| freeMenu(m);
             if (self.open_keyboard) |*k| self.freeKeyboard(k);
             if (self.open_directory) |*d| self.freeDirectory(d);
             self.* = undefined;
@@ -662,23 +662,21 @@ pub fn App(comptime Root: type) type {
         fn menu(ptr: *anyopaque, request: *const app.platform.MenuRequest, reply: app.platform.IndexReply) Error!void {
             const self: *Self = @ptrCast(@alignCast(ptr));
             if (self.open_menu != null) return error.ServiceFailed;
-            var m: Menu = .{ .reply = reply, .arrays = .empty, .strings = .empty, .ids = .empty };
-            errdefer self.freeMenu(&m);
-            _ = try self.buildMenu(&m, request.items);
+            var m: Menu = .{ .reply = reply, .arena = .init(self.gpa), .ids = .empty };
+            errdefer freeMenu(&m);
+            const top = try buildMenu(&m, request.items);
             self.open_menu = m;
             self.modal += 1;
             const s = self.screen.scale;
-            self.api.OpenMenu(m.arrays.items[0].ptr, 0, @intFromFloat(@round(request.at.x * s)), @intFromFloat(@round(request.at.y * s)), menuChosen);
+            self.api.OpenMenu(top.ptr, 0, @intFromFloat(@round(request.at.x * s)), @intFromFloat(@round(request.at.y * s)), menuChosen);
         }
 
-        fn buildMenu(self: *Self, m: *Menu, items: []const app.platform.MenuItem) Error![]inkview.MenuItem {
-            const array = try self.gpa.alloc(inkview.MenuItem, items.len + 1);
-            try m.arrays.append(self.gpa, array);
+        fn buildMenu(m: *Menu, items: []const app.platform.MenuItem) Error![]inkview.MenuItem {
+            const arena = m.arena.allocator();
+            const array = try arena.alloc(inkview.MenuItem, items.len + 1);
             array[items.len] = .end;
             for (items, array[0..items.len]) |item, *entry| {
-                const text = try dupeZ(self.gpa, item.title);
-                try m.strings.append(self.gpa, text);
-                try m.ids.append(self.gpa, item.id);
+                try m.ids.append(arena, item.id);
                 if (m.ids.items.len > std.math.maxInt(c_short)) return error.ServiceFailed;
                 entry.* = .{
                     .type = switch (item.kind) {
@@ -688,10 +686,10 @@ pub fn App(comptime Root: type) type {
                         .submenu => .submenu,
                     },
                     .index = @intCast(m.ids.items.len),
-                    .text = text.ptr,
+                    .text = (try dupeZ(arena, item.title)).ptr,
                     .submenu = null,
                 };
-                if (item.kind == .submenu) entry.submenu = (try self.buildMenu(m, item.submenu)).ptr;
+                if (item.kind == .submenu) entry.submenu = (try buildMenu(m, item.submenu)).ptr;
             }
             return array;
         }
@@ -700,18 +698,14 @@ pub fn App(comptime Root: type) type {
             const self = &instance;
             var m = self.open_menu orelse return;
             self.open_menu = null;
-            defer self.freeMenu(&m);
+            defer freeMenu(&m);
             const id: ?usize = if (index >= 1 and index <= m.ids.items.len) m.ids.items[@intCast(index - 1)] else null;
             m.reply.send(id) catch |err| log.err("menu reply: {t}", .{err});
             self.modalClosed();
         }
 
-        fn freeMenu(self: *Self, m: *Menu) void {
-            for (m.arrays.items) |a| self.gpa.free(a);
-            for (m.strings.items) |s| self.gpa.free(s);
-            m.arrays.deinit(self.gpa);
-            m.strings.deinit(self.gpa);
-            m.ids.deinit(self.gpa);
+        fn freeMenu(m: *Menu) void {
+            m.arena.deinit();
         }
 
         /// `OpenKeyboard` on the request's text, with the layout its flags
@@ -764,10 +758,12 @@ pub fn App(comptime Root: type) type {
             const self: *Self = @ptrCast(@alignCast(ptr));
             const open = self.api.OpenDirectorySelector orelse return error.Unsupported;
             if (self.open_directory != null) return error.ServiceFailed;
-            const buffer = try self.gpa.allocSentinel(u8, 1024, 0);
+            // the chooser writes the choice back over the starting path
+            const start_dir = self.options.directory;
+            const buffer = try self.gpa.allocSentinel(u8, @max(1024, start_dir.len), 0);
             errdefer self.gpa.free(buffer);
-            @memset(buffer, 0);
-            @memcpy(buffer[0..self.options.directory.len], self.options.directory);
+            @memcpy(buffer[0..start_dir.len], start_dir);
+            @memset(buffer[start_dir.len..], 0);
             const title = try dupeZ(self.gpa, request.message);
             self.open_directory = .{ .reply = reply, .title = title, .buffer = buffer };
             open(title, buffer.ptr, @intCast(buffer.len), directoryChosen);
