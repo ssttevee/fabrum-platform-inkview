@@ -79,12 +79,14 @@ const Probe = struct {
                 .{ .title = "Disabled", .id = 2, .enabled = false },
                 .{ .title = "More", .kind = .submenu, .submenu = &.{.{ .title = "Big id", .id = 70000 }} },
                 .{ .title = "About", .id = 3 },
+                .{ .title = "Quit", .id = 4 },
             }, .at = .init(10, 20) }, ctx.handler(.chose)),
             .chose => |id| {
                 state.chosen = id;
                 state.choices += 1;
                 if (id == 1) state.page = .settings;
                 if (id == 3) try ctx.message(.{ .title = "About", .text = "Probe", .timeout_ms = 1500 });
+                if (id == 4) try ctx.confirm(.{ .title = "Quit?", .text = "Really quit?", .buttons = &.{ "Quit", "Cancel" } }, ctx.handler(.answered));
             },
             .key => |e| if (e.phase == .press) switch (e.key) {
                 .page_down => ctx.scrollTo("list", .{ .by = .init(0, 200) }, .{}),
@@ -430,7 +432,7 @@ test "Menu opens an imenu tree answered by the item's id, big ids included" {
     const m = fake.state.menus.items[0];
     try testing.expectEqual(@as(c_int, @intFromFloat(@round(10 * scale()))), m.x);
     const top = m.top();
-    try testing.expectEqual(6, top.len);
+    try testing.expectEqual(7, top.len);
     try testing.expectEqual(.header, top[0].type);
     try testing.expectEqualStrings("Settings", std.mem.span(top[1].text.?));
     try testing.expectEqual(.active, top[1].type);
@@ -457,6 +459,28 @@ test "Menu opens an imenu tree answered by the item's id, big ids included" {
     try testing.expectEqual(@as(?usize, null), probe().chosen);
     try testing.expectEqual(3, probe().choices);
     try testing.expectEqual(0, host().modal);
+}
+
+test "a dialog, menu or keyboard an update opens isn't drawn over by the rest of its frame" {
+    try start(.{});
+    defer stop();
+    try tapText("Ask");
+    try testing.expect(fake.modalShown());
+    fake.answerDialog(2);
+    try tapText("Menu");
+    try testing.expect(fake.modalShown());
+    // a dialog opened by the menu's answer: the frame that runs the answer
+    // had held the redraw of the whole screen
+    fake.chooseMenu(8);
+    try testing.expectEqual(1, fake.state.dialogs.items.len);
+    try testing.expect(fake.modalShown());
+    fake.answerDialog(2);
+    try testing.expectEqual(0, host().modal);
+    try checkFramebuffer();
+    try tapText("Search");
+    try testing.expect(fake.modalShown());
+    fake.keyboardResult(null);
+    try checkFramebuffer();
 }
 
 test "About shows a blocking Message; frames a timer asked for meanwhile run after it" {

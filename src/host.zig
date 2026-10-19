@@ -478,11 +478,20 @@ pub fn App(comptime Root: type) type {
                     if (due.nanoseconds > t.nanoseconds or count == 4) break;
                     _ = try self.runtime.frame(Root, self.props, self.screen.viewport(), t);
                     count += 1;
+                    if (self.modal > 0) break;
                 }
-                if (self.stale != null and count == 0) {
+                if (self.stale != null and count == 0 and self.modal == 0) {
                     // the commands may be from before the screen changed
                     _ = try self.runtime.frame(Root, self.props, self.screen.viewport(), self.now());
                     count += 1;
+                }
+                if (self.modal > 0) {
+                    // an update in the frame opened a dialog, menu or the
+                    // keyboard, which the library has drawn: drawing the
+                    // frame now would cover it. Everything is redrawn when
+                    // it closes.
+                    if (count > 0) self.held = true;
+                    break;
                 }
                 if (count > 0) try self.present();
                 if (!self.deferred) break;

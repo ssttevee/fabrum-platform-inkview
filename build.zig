@@ -46,7 +46,10 @@ pub fn build(b: *std.Build) void {
         .glibc_version = .{ .major = 2, .minor = 23, .patch = 0 },
         .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 },
     });
-    if (exampleFor(b, device, .ReleaseSmall)) |exe| {
+    // `safe` keeps safety checks and the symbols for a stack trace
+    // when something crashes on the device, at about five times the size
+    const device_optimize = b.option(std.builtin.OptimizeMode, "device-optimize", "Optimization of the device app: small (the default), safe, fast or debug") orelse .small;
+    if (exampleFor(b, device, device_optimize)) |exe| {
         const install = b.addInstallArtifact(exe, .{
             .dest_dir = .{ .override = .{ .custom = "pocketbook" } },
             .dest_sub_path = app_name ++ ".app",

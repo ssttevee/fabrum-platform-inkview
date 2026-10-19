@@ -364,9 +364,33 @@ fn SendEvent(h: inkview.Handler, kind: c_int, par1: c_int, par2: c_int) callconv
     state.queue.append(state.gpa, .{ .kind = kind, .par1 = par1, .par2 = par2 }) catch @panic("OOM");
 }
 
-/// The pixels under a modal UI, restored when it closes.
+/// The pixels under a modal UI, restored when it closes. The UI then
+/// draws itself (`drawModal`).
 fn saveScreen() []u8 {
-    return state.gpa.dupe(u8, state.framebuffer) catch @panic("OOM");
+    const saved = state.gpa.dupe(u8, state.framebuffer) catch @panic("OOM");
+    drawModal();
+    return saved;
+}
+
+/// The gray a modal UI is drawn in, a band across the middle of the
+/// screen, so a host that draws over one is caught (`modalShown`).
+const modal_gray = 0x55;
+const modal_rows = 8;
+
+fn drawModal() void {
+    const stride: usize = @intCast(state.canvas.scanline);
+    const top: usize = @intCast(@divTrunc(state.height, 2));
+    for (top..top + modal_rows) |y| @memset(state.framebuffer[y * stride ..][0..@intCast(state.width)], modal_gray);
+}
+
+/// Whether the last modal UI drawn is still on the framebuffer, as the
+/// library drew it.
+pub fn modalShown() bool {
+    const top: usize = @intCast(@divTrunc(state.height, 2));
+    for (top..top + modal_rows) |y| {
+        for (row(y)) |px| if (px != modal_gray) return false;
+    }
+    return true;
 }
 
 /// A copy of a C string, for the logs.
