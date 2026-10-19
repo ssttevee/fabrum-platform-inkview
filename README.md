@@ -11,8 +11,8 @@ Written for the PocketBook Verse (model 629, Allwinner B288), with one
 `.app` targeting firmware 6.8, 6.9 and 6.10–6.11, against the 6.10 SDK
 headers and [libinkview](https://github.com/ssttevee/libinkview)'s
 [documentation](https://github.com/ssttevee/libinkview/blob/trunk/docs/README.md).
-**It has started and drawn on a Verse with firmware 6.8**; most of the
-device checks are still to do: see "What needs the device".
+**It has passed the first-run checks on a Verse with firmware 6.8**: see
+"What needs the device".
 
 ## What it is
 
@@ -305,8 +305,11 @@ with the SDK's `system/` tree (fonts, config), per libinkview's
 
 ## What needs the device
 
-Steps 1 and 2 passed on a Verse with firmware U629.6.8.4081; the rest
-haven't been tried yet. The first run, with `ReaderShell-log.app`:
+All eight passed on a Verse with firmware U629.6.8.4081, step 7 after two
+fixes: a frame no longer draws over the dialog its update opened, and
+events `Message` delivers to the handler while its box is up wait for the
+frame under way. Other firmware hasn't been tried. The first run, with
+`ReaderShell-log.app`:
 
 1. The app starts and the library loads: the log's first line after
    `starting` should be `screen 758x1024 px, scale 2.21, viewport 343x464
