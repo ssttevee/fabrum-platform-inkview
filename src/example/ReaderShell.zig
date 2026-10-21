@@ -1,16 +1,10 @@
-//! A reader shell: the screen a manga reader would start from, as a stand-in
-//! for one built on the Tachiyomi (Suwayomi) protocol. A title bar, a
-//! search field that opens the system keyboard, a Menu button for the
-//! context menu, a scrolling list of chapters with Pick buttons, which
-//! the page keys scroll (and a finger pans, as the runtime does for any
-//! drawn scroll container on a touch screen), a confirm dialog before
-//! quitting, and a Settings page the menu toggles.
-//!
-//! Where the reader would go: the list's items would come from the
-//! server's library through a `Poster` from a fetching thread (covers
-//! decoded to gray through the same path), and picking one would open the
-//! reader page, whose page turns ask for `page` refreshes. Nothing here
-//! talks to a network.
+//! A reader shell: the first screen of a reading app on an e-reader. A
+//! title bar, a search field that opens the system keyboard, a Menu button
+//! for the context menu, a scrolling list of chapters with Pick buttons,
+//! which the page keys scroll (and a finger pans, as the runtime does for
+//! any drawn scroll container on a touch screen), a confirm dialog before
+//! quitting, and a Settings page the menu toggles. The chapters are made
+//! up; nothing here talks to a network.
 //!
 //! It knows nothing of InkView: `main.zig` hosts it, and the tests below
 //! run it through `app.testing.Harness` with fake services.

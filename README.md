@@ -42,7 +42,7 @@ process when the app closes.
 | Refresh policy | `src/refresh.zig` | Hints to updates, with A2 hysteresis and a periodic cleaning refresh; a value with no InkView in it. |
 | Keys | `src/keys.zig` | `KeyMap`: which fabrum key each hardware key means. |
 | Fake | `src/fake.zig` | A fake InkView for tests: framebuffer, timers, modal UIs, the clock. |
-| Example | `src/example/` | `ReaderShell`, a stand-in for a manga reader's first screen, and its `main.zig`. |
+| Example | `src/example/` | `ReaderShell`, the first screen of a reading app (a chapter list, search, a menu, dialogs and a settings page), and its `main.zig`. |
 
 ## Adding it to an app
 
@@ -355,15 +355,6 @@ Risks:
   32-bit targets (zg's tables don't build there); graphemes are zg's.
 - **`Message` blocks** inside `update`; a 30-second message freezes the
   app for 30 seconds.
-
-## Where the manga reader goes
-
-`ReaderShell` is the shape of the reader's first screen. The library's
-items would come from a Suwayomi server over `std.http.Client` on a
-fetching thread, posted to the component with a `Poster` (covers decoded
-to gray8 the same way); picking a chapter would open a reader page whose
-turns ask for `page` refreshes. The earlier attempt
-(`pocketbook-suwayomi-client`) has the GraphQL client to carry over.
 
 ## fabrum gaps found
 
