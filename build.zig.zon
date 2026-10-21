@@ -7,14 +7,14 @@
         // Only for this package's own tests and example: apps give the
         // platform their own fabrum (see build.zig).
         .fabrum = .{
-            .url = "git+https://github.com/ssttevee/fabrum#2047c22cca6848c4cf7037e0df786905479fa339",
-            .hash = "fabrum-0.0.0-qj9rbWoAEwC6FowskZHvonwqTEUNzMcBqBBTGkK5nDPU",
+            .url = "git+https://github.com/ssttevee/fabrum#bdaa521f6c229915be6ba9a629e89bd91d67093a",
+            .hash = "fabrum-0.0.0-qj9rbUxiwR_vqc81WFRFxVhPnpGW15PTanoAHN1cz_yp",
             .lazy = true,
         },
         // The host draws with z2d, into the panel's gray framebuffer.
         .fabrum_renderer_z2d = .{
-            .url = "git+https://github.com/ssttevee/fabrum-renderer-z2d#b0f724b10e1c2aff7515fa2fd5c9d0fd7525c293",
-            .hash = "fabrum_renderer_z2d-0.0.0-HsrDaiZcAAA8h5btEFH0jKwQP4sYJ8giyVCMrcfOkXYi",
+            .url = "git+https://github.com/ssttevee/fabrum-renderer-z2d#ec8a8dc0f2f8258b4f1b38a45a2aa24227b107a1",
+            .hash = "fabrum_renderer_z2d-0.0.0-HsrDapbTAgDV6GDJsXnB8M6mP6wCyDZZjg0Pmfy9g71p",
         },
     },
     .paths = .{
