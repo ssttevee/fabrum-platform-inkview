@@ -240,6 +240,17 @@ Timers: `Runtime.nextFrame` arms one InkView timer (`SetHardTimer`, or
 frame, since the library's timers are one-shot and keyed by their
 function. The A2 exit is a second one.
 
+While background tasks are pending, a hard timer also checks completion at
+most every `Options.task_poll_interval_ms` milliseconds (100 by default).
+This fallback covers firmware that queues worker events without promptly
+waking the idle loop. It stops after task collection, and preserves earlier
+UI timer deadlines. Set the option to `null` to test direct wake delivery
+without periodic polling; ordinary UI timers still run. `Options.task_activity`
+is called on the main thread while work is pending, including fallback ticks,
+and with `false` after completion or after shutdown joins the workers, so an
+app can balance its own sleep protection. The activity hook remains enabled
+when polling is disabled.
+
 Threads: everything runs on InkView's loop thread. A `Poster.post` from
 another thread calls `SendEvent`, which libinkview documents as the way
 for worker threads to reach the handler; its queue is a ring of 128, so

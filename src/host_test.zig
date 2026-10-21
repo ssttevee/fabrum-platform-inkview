@@ -897,3 +897,38 @@ test "task activity ends after exit has joined the running worker" {
     try testing.expect(!task_activity_current);
     try testing.expect(fake.timer("fabrum-frame") == null);
 }
+
+test "task fallback can be disabled without losing activity or ordinary timers" {
+    try testing.expectEqual(@as(?u32, 100), (root.Options{}).task_poll_interval_ms);
+    for ([_]?i64{ null, 40 }) |tick_ms| {
+        try fake.init(testing.allocator, .{ .width = 64, .height = 64 });
+        defer fake.deinit();
+        var worker: WakeWorker = .{};
+        task_activity_current = false;
+        try WakeHost.run(testing.allocator, testing.io, fake.api(), .{ .worker = &worker, .tick_ms = tick_ms }, .{
+            .clock = fake.clock,
+            .task_activity = observeTaskActivity,
+            .task_poll_interval_ms = null,
+        });
+        defer WakeHost.instance.deinit();
+        defer worker.release.set(testing.io);
+        try worker.started.wait(testing.io);
+        try testing.expect(task_activity_current);
+        if (tick_ms != null) {
+            try testing.expect(fake.timer("fabrum-frame").?.due_ms <= 40);
+            fake.advance(40);
+            try testing.expectEqual(@as(usize, 1), WakeHost.instance.runtime.rootState(WakeProbe).?.ticks);
+        } else try testing.expect(fake.timer("fabrum-frame") == null);
+        const record = WakeHost.instance.runtime.core.tasks.records.items[0];
+        worker.release.set(testing.io);
+        // The fake's event queue is main-thread driven. Join its producer
+        // before pumping, after a real worker has posted through SendEvent.
+        try record.group.await(testing.io);
+        try testing.expect(!WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+        fake.pump();
+        try testing.expect(WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+        try testing.expectEqual(@as(u8, 0), fake.state.framebuffer[0]);
+        try testing.expect(!task_activity_current);
+        if (tick_ms == null) try testing.expect(fake.timer("fabrum-frame") == null);
+    }
+}

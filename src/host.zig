@@ -105,6 +105,10 @@ pub const Options = struct {
     /// pending. Called again on fallback ticks so hosts can renew sleep bans,
     /// and with false after workers are joined at shutdown.
     task_activity: ?*const fn (bool) void = null,
+    /// Maximum fallback wake interval while tasks are pending, in milliseconds.
+    /// Null relies on worker notifications and leaves ordinary UI timers alone.
+    /// The task activity hook remains active when this fallback is disabled.
+    task_poll_interval_ms: ?u32 = 100,
     /// How the whole screen is refreshed when the library asks for a
     /// redraw (`EVT_SHOW` after the keyboard closes, `EVT_REPAINT`,
     /// coming back to the foreground): a cleaning flash, or quietly.
@@ -618,10 +622,14 @@ pub fn App(comptime Root: type) type {
         fn armFrameTimer(self: *Self) void {
             const pending = self.hasPendingTasks();
             if (self.options.task_activity) |activity| activity(pending);
+            const interval: ?c_int = if (pending) if (self.options.task_poll_interval_ms) |ms|
+                @intCast(@min(@max(ms, 1), std.math.maxInt(c_int)))
+            else
+                null else null;
             const ms = if (self.runtime.nextFrame()) |due|
-                if (pending) @min(self.millisUntil(due), 100) else self.millisUntil(due)
-            else if (pending)
-                100
+                if (interval) |poll_ms| @min(self.millisUntil(due), poll_ms) else self.millisUntil(due)
+            else if (interval) |poll_ms|
+                poll_ms
             else {
                 if (self.frame_timer_armed) {
                     self.api.ClearTimer(frameTimer);
@@ -632,7 +640,7 @@ pub fn App(comptime Root: type) type {
             // Some firmware queues SendEvent from workers without promptly
             // waking its idle loop. A hard timer bounds completion delivery,
             // and disappears as soon as task resources have been collected.
-            const set = if (pending) self.api.SetHardTimer else switch (self.options.frame_timer) {
+            const set = if (interval != null) self.api.SetHardTimer else switch (self.options.frame_timer) {
                 .hard => self.api.SetHardTimer,
                 .weak => self.api.SetWeakTimer,
             };
