@@ -54,14 +54,16 @@ const Probe = struct {
         focus_list,
         back,
         open_dir,
+        worker_done: std.Io.Cancelable!void,
         dir: ?[]const u8,
     };
 
-    pub const Props = struct { items: u8 = 30, tick: bool = false };
+    pub const Props = struct { items: u8 = 30, tick: bool = false, worker: ?*ExitWorker = null };
     pub const PickKey = struct { pick: usize };
 
     pub fn update(state: *State, msg: Msg, ctx: *app.Update(Probe)) !void {
         switch (msg) {
+            .worker_done => {},
             .pick => state.picks += 1,
             .text => |t| {
                 state.text.clearRetainingCapacity();
@@ -113,6 +115,7 @@ const Probe = struct {
     }
 
     pub fn view(ui: *app.Ui, state: *const State, props: Props) !void {
+        if (props.worker) |worker| try ui.task("exit-worker", .{}, ExitWorker.run, .{worker}, ui.messages(Probe).handler(.worker_done));
         const on = ui.messages(Probe);
         const theme = ui.use(app.native.Theme);
         const style: layout.text.Style = .{ .font_size = theme.font_size, .color = theme.text, .wrap_mode = .none };
@@ -397,7 +400,8 @@ test "Ask opens Dialog3; its answer is a message; the first button quits" {
     fake.answerDialog(1);
     try testing.expectEqual(@as(?usize, 0), probe().answer);
     try testing.expect(fake.state.closed);
-    try checkFramebuffer();
+    try testing.expect(host().exiting);
+    // InkView is exiting; its restored pixels must not be drawn over.
 }
 
 test "frames are held while a dialog is up, and everything is redrawn after it closes" {
@@ -720,4 +724,56 @@ test "a replacement requested inside the runtime releases a stale directory repl
     fake.directoryResult(null);
     try testing.expectEqual(2, probe().dir_answers);
     try testing.expectEqual(0, host().modal);
+}
+
+const ExitWorker = struct {
+    started: std.Io.Event = .unset,
+    finished: std.atomic.Value(bool) = .init(false),
+
+    fn run(task: *app.Task, self: *ExitWorker) std.Io.Cancelable!void {
+        defer self.finished.store(true, .release);
+        self.started.set(task.io);
+        while (true) {
+            try task.checkCancel();
+            try task.io.sleep(.fromMilliseconds(60_000), .awake);
+        }
+    }
+};
+
+test "EVT_EXIT cancels and joins a running task, even inside a blocking runtime call" {
+    for ([_]bool{ false, true }) |reentered| {
+        var worker: ExitWorker = .{};
+        try start(.{ .props = .{ .worker = &worker } });
+        defer stop();
+        try worker.started.wait(testing.io);
+        try testing.expect(!worker.finished.load(.acquire));
+        fake.clearUpdates();
+        host().in_runtime = reentered;
+        _ = fake.send(.exit, 0, 0);
+        host().in_runtime = false;
+        try testing.expect(worker.finished.load(.acquire));
+        try testing.expect(host().exiting);
+        _ = fake.send(.exit, 0, 0);
+        _ = fake.send(.show, 0, 0);
+        try testing.expectEqual(0, fake.state.updates.items.len);
+    }
+}
+
+test "host close paths join runtime tasks before returning from CloseApp" {
+    for ([_]bool{ false, true }) |service| {
+        var worker: ExitWorker = .{};
+        try start(.{ .props = .{ .worker = &worker } });
+        defer stop();
+        try worker.started.wait(testing.io);
+        host().options.close_key = .back;
+        if (service) {
+            try tapText("Ask");
+            fake.answerDialog(1);
+        } else {
+            _ = fake.pressKey(host().options.close_key.?);
+        }
+        try testing.expect(fake.state.closed);
+        try testing.expect(worker.finished.load(.acquire));
+        try testing.expect(host().exiting);
+    }
 }

@@ -219,7 +219,7 @@ A2, and the flashes are the app's page turns and the periodic clean.
 | `EVT_POINTERCANCEL` | `Runtime.cancelPointer` |
 | `EVT_KEYPRESS`, `KEYREPEAT`, `KEYRELEASE` | `Runtime.key` through `Options.keys` |
 | `EVT_PREVPAGE`, `EVT_NEXTPAGE` | Page Up and Page Down |
-| `EVT_EXIT` | nothing: the library is already exiting, and can't be refused |
+| `EVT_EXIT` | cancel and join runtime tasks before InkView calls `_exit`; cannot be refused and does not draw |
 | `EVT_CUSTOM + 1` | a wake from `Poster.post` on another thread |
 
 The handler returns 1 when the app took the event, so InkView's defaults
@@ -364,11 +364,16 @@ Risks:
   app for 30 seconds. It can also trigger fabrum's default 16 ms view/update
   watchdog diagnostic (`Runtime.Options.watchdog_ms`); `Options` does not
   expose an override.
-- **Task shutdown.** The host does not call `runtime.cancelTasks()` on
-  exit. `InkViewMain` ends with `_exit`, so task cancellation and deferred
-  cleanup are not guaranteed to run. Apps using `ctx.run`, `ctx.runKey` or
-  `ui.task` must finish any required saves or other cleanup before asking
-  InkView to close; they cannot rely on task defers at process exit.
+- **Task shutdown.** `EVT_EXIT`, the host's close key, and the quit/close
+  service call `runtime.cancelTasks()` before InkView can end the process
+  with `_exit`. Cancellation joins workers while their runtime and services
+  are still alive, so task defers run. Tasks must use cancellation-aware I/O
+  or `Task.checkCancel()` and return promptly; a task that ignores cancellation
+  can block exit indefinitely. The SDK documents no fixed cleanup deadline;
+  a forced task kill can bypass `EVT_EXIT` entirely, so persistent state should
+  still be saved during normal operation. No further frames draw after exit
+  starts, including when a blocking `Message` reenters the handler.
+
 
 ## fabrum gaps found
 

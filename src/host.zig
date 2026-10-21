@@ -11,6 +11,9 @@
 //! (`EVT_POINTERLONG`); keys go through `Options.keys` to `Runtime.key`;
 //! `EVT_EXIT` can't be refused (the library is already exiting), so a
 //! guarded close only works for the app's own `quit` and `Options.close_key`.
+//! Exit and host-initiated close cancel and join runtime tasks before InkView
+//! can call `_exit`. Tasks must cooperate with cancellation and return promptly;
+//! a task that ignores it can hold up exit. The SDK specifies no fixed deadline.
 //!
 //! **Frames out.** After every event, frames run while the runtime says one
 //! is due; a later due time arms an InkView timer (`SetHardTimer`, or a
@@ -135,6 +138,8 @@ pub fn App(comptime Root: type) type {
         /// Whether the app is the active task; updates from a background
         /// task are dropped by the system anyway.
         active: bool = true,
+        /// No more frames once task shutdown or InkView exit begins.
+        exiting: bool = false,
         /// Whether a primary press is under way.
         pointer_down: bool = false,
         /// Inside the runtime (an input call, a frame): anything asking for
@@ -267,6 +272,13 @@ pub fn App(comptime Root: type) type {
 
         /// Delivers the event to the runtime, then runs the frames due.
         fn handle(self: *Self, event: inkview.Event, par1: c_int, par2: c_int) !c_int {
+            // Message can pump EVT_EXIT while an update is still running.
+            // Cleanup must happen even then: InkView will call _exit next.
+            if (event == .exit) {
+                self.stopTasks();
+                return 0;
+            }
+            if (self.exiting) return 0;
             if (self.in_runtime) return self.reentered(event);
             self.in_runtime = true;
             const result = self.dispatch(event, par1, par2);
@@ -355,7 +367,7 @@ pub fn App(comptime Root: type) type {
                 .key_press, .key_repeat, .key_release => {
                     const pressed: inkview.Key = @fromBackingInt(par1);
                     if (pressed == self.options.close_key) {
-                        if (event == .key_press and try self.runtime.shouldClose(.quit)) self.api.CloseApp();
+                        if (event == .key_press and try self.runtime.shouldClose(.quit)) self.close();
                         return true;
                     }
                     const key = self.options.keys.of(pressed) orelse return null;
@@ -478,6 +490,7 @@ pub fn App(comptime Root: type) type {
         /// UI is up or a frame is already running (a timer firing inside a
         /// blocking `Message`), in which case the frame waits.
         fn frames(self: *Self) !void {
+            if (self.exiting) return;
             // The selector restored our handler without answering. Treat
             // that as cancellation before a stale modal can hold frames.
             if (!self.in_runtime and self.open_directory != null and self.api.GetEventHandler() == handler) {
@@ -503,12 +516,22 @@ pub fn App(comptime Root: type) type {
                     const t = self.now();
                     if (due.nanoseconds > t.nanoseconds or count == 4) break;
                     _ = try self.runtime.frame(Root, self.props, self.screen.viewport(), t);
+                    if (self.exiting) {
+                        // An update may request close before its view has
+                        // declared tasks. Join those too before returning.
+                        self.stopTasks();
+                        return;
+                    }
                     count += 1;
                     if (self.modal > 0) break;
                 }
                 if (self.stale != null and count == 0 and self.modal == 0) {
                     // the commands may be from before the screen changed
                     _ = try self.runtime.frame(Root, self.props, self.screen.viewport(), self.now());
+                    if (self.exiting) {
+                        self.stopTasks();
+                        return;
+                    }
                     count += 1;
                 }
                 if (self.modal > 0) {
@@ -838,9 +861,24 @@ pub fn App(comptime Root: type) type {
             self.frames() catch |err| log.err("after a dialog: {t}", .{err});
         }
 
+        /// Cancellation joins workers. Keep the runtime and services alive
+        /// until their defers have finished; never draw during EVT_EXIT.
+        fn stopTasks(self: *Self) void {
+            self.exiting = true;
+            self.api.ClearTimer(frameTimer);
+            self.api.ClearTimer(a2Timer);
+            self.frame_timer_armed = false;
+            self.runtime.cancelTasks();
+        }
+
+        fn close(self: *Self) void {
+            self.stopTasks();
+            self.api.CloseApp();
+        }
+
         fn quit(ptr: *anyopaque) void {
             const self: *Self = @ptrCast(@alignCast(ptr));
-            self.api.CloseApp();
+            self.close();
         }
     };
 }
