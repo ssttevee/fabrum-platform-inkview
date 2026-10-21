@@ -105,6 +105,10 @@ pub const Options = struct {
     /// redraw (`EVT_SHOW` after the keyboard closes, `EVT_REPAINT`,
     /// coming back to the foreground): a cleaning flash, or quietly.
     show_refresh: enum { full, partial } = .full,
+    /// Debug view/update budget in milliseconds, passed to the runtime.
+    /// Null or zero disables it. Blocking InkView Message dialogs exceed
+    /// the default 16 ms budget; raise or disable it when using them.
+    watchdog_ms: ?u32 = 16,
     /// Root values for the app, as `Runtime.Options.provide`.
     provide: []const app.RootValue = &.{},
     /// Capacity of the layout built each frame, as `Runtime.Options.context`:
@@ -225,6 +229,7 @@ pub fn App(comptime Root: type) type {
             for (options.fonts) |font| try self.renderer.loadFont(font.name, font.data);
             self.runtime = try .init(gpa, .{
                 .io = io,
+                .watchdog_ms = options.watchdog_ms,
                 .text_context = self.renderer.text_context,
                 .platform = .{ .ptr = self, .vtable = &platform_vtable },
                 .provide = options.provide,

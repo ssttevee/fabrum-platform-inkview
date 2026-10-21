@@ -362,8 +362,10 @@ Risks:
   32-bit targets (zg's tables don't build there); graphemes are zg's.
 - **`Message` blocks** inside `update`; a 30-second message freezes the
   app for 30 seconds. It can also trigger fabrum's default 16 ms view/update
-  watchdog diagnostic (`Runtime.Options.watchdog_ms`); `Options` does not
-  expose an override.
+  watchdog diagnostic. `Options.watchdog_ms` is passed to the runtime:
+  raise the budget for blocking dialogs or set it to null or zero to disable
+  the diagnostic. The watchdog is active only in debug builds; it logs slow
+  view/update calls and does not interrupt the dialog.
 - **Task shutdown.** `EVT_EXIT`, the host's close key, and the quit/close
   service call `runtime.cancelTasks()` before InkView can end the process
   with `_exit`. Cancellation joins workers while their runtime and services

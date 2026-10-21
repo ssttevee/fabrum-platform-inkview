@@ -777,3 +777,12 @@ test "host close paths join runtime tasks before returning from CloseApp" {
         try testing.expect(host().exiting);
     }
 }
+
+test "host watchdog options reach the runtime, including both disable values" {
+    try testing.expectEqual(@as(?u32, 16), (root.Options{}).watchdog_ms);
+    for ([_]?u32{ 16, 250, null, 0 }) |budget| {
+        try start(.{ .host = .{ .watchdog_ms = budget } });
+        defer stop();
+        try testing.expectEqual(budget, host().runtime.core.watchdog_ms);
+    }
+}
