@@ -254,7 +254,7 @@ called off the loop thread.
 | `confirm` | `Dialog3(icon \| DEF_BUTTONn \| DLG_HW_BUTTON, …)` | Buttons answered 1–3 become indices 0–2, -1 (Back) becomes null. One at a time. |
 | `menu` | `OpenMenu(imenu[], 0, x, y, …)` | `ITEM_HEADER`, `ITEM_SEPARATOR`, `ITEM_INACTIVE`, `ITEM_SUBMENU` from the items; `imenu.index` is a position in the tree (a `short`), mapped back to `MenuItem.id`. The strings live until the callback. |
 | `editText` | `OpenKeyboard(title, buffer, maxlen, flags, …)` | `KBD_URL` (url, email), `KBD_NUMERIC`, `KBD_PASSWORD`; `KBD_NOSELECT` so typing appends; `KBD_NOUPDATE_AFTER_CLOSE`. The text (or null for cancel) goes through the `Reply`. Drawn text fields ask for it when tapped, since the keyboard is `on_screen`. `multiline` is ignored. The buffer uses `max_len`, or `Options.text_max_len` (1024) when zero, enlarged to hold the initial text. |
-| `openDirectory` | `OpenDirectorySelector` | Only on firmware up to 6.5; `error.Unsupported` where the symbol is gone (6.8+). Starts at `Options.directory` (`/mnt/ext1`). Not counted as modal: it only calls back on confirmation; cancellation leaves the request pending and prevents another directory chooser. |
+| `openDirectory` | `OpenDirectorySelector` | Only on firmware up to 6.5; `error.Unsupported` where the symbol is gone. Starts at `Options.directory` (`/mnt/ext1`). Modal until the callback: a path confirms, null cancels. A new request answers any stale pending request with null before replacing it. |
 | `openFile` | none | `error.Unsupported`: InkView has no file chooser. A drawn list on `iv_opendir` is future work. |
 | clipboard | none | fabrum's clipboard private to the program. |
 | `quit`, `close` | `CloseApp()` | One window: closing is quitting. |
@@ -388,3 +388,10 @@ Found building this package, and fixed in fabrum since:
 - A list with more rows than `Context.Config.breadth` allowed crashed
   with `unreachable`; it fails the frame with `error.LayoutCapacity` now,
   logging which limit to raise (`ReaderShell.layout_capacity` raises it).
+
+The directory selector's 6.5 SDK implementation restores the previous handler
+and calls its callback with null on Back/cancel; it does not send `EVT_SHOW`.
+If firmware restores the app handler without replying, the next event/frame
+answers null by checking `GetEventHandler`. A replacement request also clears
+any stale reply. The fake API exercises deferred confirmation, cancellation, and a lost reply
+followed by a replacement request.

@@ -478,6 +478,12 @@ pub fn App(comptime Root: type) type {
         /// UI is up or a frame is already running (a timer firing inside a
         /// blocking `Message`), in which case the frame waits.
         fn frames(self: *Self) !void {
+            // The selector restored our handler without answering. Treat
+            // that as cancellation before a stale modal can hold frames.
+            if (!self.in_runtime and self.open_directory != null and self.api.GetEventHandler() == handler) {
+                directoryChosen(null);
+                return;
+            }
             if (self.modal > 0) {
                 self.held = true;
                 return;
@@ -780,13 +786,13 @@ pub fn App(comptime Root: type) type {
             self.gpa.free(k.buffer);
         }
 
-        /// `OpenDirectorySelector`, on firmware that still has it (gone in
-        /// 6.8). It only calls back on confirmation, so it doesn't count as
-        /// a modal: a cancelled chooser answers nothing.
+        /// `OpenDirectorySelector`, on firmware that still has it. The
+        /// selector calls back with a path on confirmation or null on cancel
+        /// (verified in the SDK's 6.5 library). A replacement also answers
+        /// any stale request with null, so a lost callback cannot block it.
         fn openDirectory(ptr: *anyopaque, request: *const app.platform.FileRequest, reply: app.platform.Reply) Error!void {
             const self: *Self = @ptrCast(@alignCast(ptr));
             const open = self.api.OpenDirectorySelector orelse return error.Unsupported;
-            if (self.open_directory != null) return error.ServiceFailed;
             // the chooser writes the choice back over the starting path
             const start_dir = self.options.directory;
             const buffer = try self.gpa.allocSentinel(u8, @max(1024, start_dir.len), 0);
@@ -794,7 +800,15 @@ pub fn App(comptime Root: type) type {
             @memcpy(buffer[0..start_dir.len], start_dir);
             @memset(buffer[start_dir.len..], 0);
             const title = try dupeZ(self.gpa, request.message);
+            errdefer self.gpa.free(title);
+            if (self.open_directory) |*d| {
+                try d.reply.send(null);
+                self.freeDirectory(d);
+                self.open_directory = null;
+                self.modal -= 1;
+            }
             self.open_directory = .{ .reply = reply, .title = title, .buffer = buffer };
+            self.modal += 1;
             open(title, buffer.ptr, @intCast(buffer.len), directoryChosen);
         }
 
@@ -805,7 +819,7 @@ pub fn App(comptime Root: type) type {
             defer self.freeDirectory(&d);
             d.reply.send(if (path) |p| std.mem.span(p) else null) catch |err| log.err("directory reply: {t}", .{err});
             self.stale = .content;
-            self.frames() catch |err| log.err("after the directory chooser: {t}", .{err});
+            self.modalClosed();
         }
 
         fn freeDirectory(self: *Self, d: *Directory) void {

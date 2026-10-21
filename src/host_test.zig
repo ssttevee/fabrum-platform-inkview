@@ -30,6 +30,7 @@ const Probe = struct {
         choices: usize = 0,
         page: enum { list, settings } = .list,
         dir: ?[]u8 = null,
+        dir_answers: usize = 0,
         dir_error: ?app.platform.Services.Error = null,
         ticks: usize = 0,
         list_focused: bool = false,
@@ -104,6 +105,7 @@ const Probe = struct {
                 state.dir_error = err;
             },
             .dir => |path| {
+                state.dir_answers += 1;
                 if (state.dir) |d| ctx.gpa.free(d);
                 state.dir = if (path) |p| try ctx.gpa.dupe(u8, p) else null;
             },
@@ -646,4 +648,76 @@ test "an explicit scale and a library without get_screen_dpi" {
     try testing.expectEqual(1, scale());
     try testing.expectEqual(758, @as(u32, @intFromFloat(host().screen.viewport().x)));
     try checkFramebuffer();
+}
+
+test "directory cancellation answers null, releases the modal, and allows another chooser" {
+    try start(.{ .fake = .{ .has_directory_selector = true, .confirm_directory_immediately = false } });
+    defer stop();
+    try tapText("Dir");
+    try testing.expectEqual(1, host().modal);
+    try testing.expectEqual(0, probe().dir_answers);
+    fake.directoryResult(null);
+    try testing.expectEqual(1, probe().dir_answers);
+    try testing.expect(probe().dir == null);
+    try testing.expect(host().open_directory == null);
+    try testing.expectEqual(0, host().modal);
+    try tapText("Dir");
+    fake.directoryResult("/mnt/ext1/Books");
+    try testing.expectEqual(2, probe().dir_answers);
+    try testing.expectEqualStrings("/mnt/ext1/Books", probe().dir.?);
+    try checkFramebuffer();
+}
+
+test "a lost directory callback is answered null when the next request replaces it" {
+    try start(.{ .fake = .{ .has_directory_selector = true, .confirm_directory_immediately = false } });
+    defer stop();
+    try tapText("Dir");
+    fake.loseDirectoryReply();
+    // A request queued as the handler returns must also get through.
+    try host().runtime.post(app.testing.rootInstance(Probe).handler(Probe, .open_dir), {});
+    fake.pump();
+    try testing.expectEqual(2, fake.state.directory_requests);
+    try testing.expectEqual(1, probe().dir_answers);
+    try testing.expect(probe().dir == null);
+    try testing.expectEqual(1, host().modal);
+    fake.directoryResult("/mnt/ext1/New");
+    try testing.expectEqual(2, probe().dir_answers);
+    try testing.expectEqualStrings("/mnt/ext1/New", probe().dir.?);
+    try testing.expectEqual(0, host().modal);
+}
+
+test "returning from a directory UI without a callback resolves cancellation on the next event" {
+    try start(.{ .fake = .{ .has_directory_selector = true, .confirm_directory_immediately = false } });
+    defer stop();
+    try tapText("Dir");
+    fake.loseDirectoryReply();
+    _ = fake.send(.show, 0, 0);
+    try testing.expectEqual(1, probe().dir_answers);
+    try testing.expect(probe().dir == null);
+    try testing.expectEqual(0, host().modal);
+    try testing.expect(host().open_directory == null);
+    try tapText("Dir");
+    fake.directoryResult("/mnt/ext1/Again");
+    try testing.expectEqual(2, probe().dir_answers);
+}
+
+test "a replacement requested inside the runtime releases a stale directory reply" {
+    try start(.{ .fake = .{ .has_directory_selector = true, .confirm_directory_immediately = false } });
+    defer stop();
+    try tapText("Dir");
+    _ = fake.send(.repaint, 0, 0);
+    try testing.expectEqual(0, probe().dir_answers);
+    fake.loseDirectoryReply();
+    try host().runtime.post(app.testing.rootInstance(Probe).handler(Probe, .open_dir), {});
+    // Exercise the service's own fallback before the host checks the handler.
+    host().in_runtime = true;
+    _ = try host().runtime.frame(Probe, host().props, host().screen.viewport(), fake.clock());
+    host().in_runtime = false;
+    fake.pump();
+    try testing.expectEqual(2, fake.state.directory_requests);
+    try testing.expectEqual(1, probe().dir_answers);
+    try testing.expect(probe().dir == null);
+    fake.directoryResult(null);
+    try testing.expectEqual(2, probe().dir_answers);
+    try testing.expectEqual(0, host().modal);
 }

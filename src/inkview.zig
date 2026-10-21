@@ -208,6 +208,7 @@ pub const Api = struct {
     // the loop and the app
     InkViewMain: *const fn (Handler) callconv(.c) void,
     CloseApp: *const fn () callconv(.c) void,
+    GetEventHandler: *const fn () callconv(.c) ?Handler,
     SendEvent: *const fn (Handler, c_int, c_int, c_int) callconv(.c) void,
     SetHardTimer: *const fn ([*:0]const u8, TimerProc, c_int) callconv(.c) void,
     SetWeakTimer: *const fn ([*:0]const u8, TimerProc, c_int) callconv(.c) void,

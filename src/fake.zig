@@ -81,6 +81,8 @@ pub const Options = struct {
     has_dynamic: bool = true,
     has_dpi: bool = true,
     has_directory_selector: bool = false,
+    /// Otherwise keep it open until `directoryResult`.
+    confirm_directory_immediately: bool = true,
 };
 
 pub const State = struct {
@@ -104,6 +106,7 @@ pub const State = struct {
     menus: std.ArrayList(Menu) = .empty,
     keyboards: std.ArrayList(Keyboard) = .empty,
     directory_requests: usize = 0,
+    directory: ?struct { buffer: [*:0]u8, callback: inkview.DirHandler, saved: []u8 } = null,
     orientation_sets: std.ArrayList(inkview.Orientation) = .empty,
     stretches: usize = 0,
     closed: bool = false,
@@ -136,6 +139,7 @@ pub fn deinit() void {
     state.menus.deinit(gpa);
     for (state.keyboards.items) |k| freeKeyboard(k);
     state.keyboards.deinit(gpa);
+    if (state.directory) |d| gpa.free(d.saved);
     state.orientation_sets.deinit(gpa);
     state = undefined;
 }
@@ -176,6 +180,7 @@ pub fn api() inkview.Api {
     return .{
         .InkViewMain = InkViewMain,
         .CloseApp = CloseApp,
+        .GetEventHandler = GetEventHandler,
         .SendEvent = SendEvent,
         .SetHardTimer = SetHardTimer,
         .SetWeakTimer = SetWeakTimer,
@@ -312,6 +317,30 @@ pub fn keyboardResult(text: ?[]const u8) void {
     if (!k.flags.no_evt_show) _ = send(.show, 0, 0);
 }
 
+/// Confirms a directory or cancels with null, after restoring the screen.
+/// The 6.5 selector uses a null callback for cancellation, without EVT_SHOW.
+pub fn directoryResult(path: ?[]const u8) void {
+    const d = state.directory.?;
+    state.directory = null;
+    defer state.gpa.free(d.saved);
+    @memcpy(state.framebuffer, d.saved);
+    if (path) |value| {
+        std.mem.copyForwards(u8, d.buffer[0..value.len], value);
+        d.buffer[value.len] = 0;
+        d.callback(d.buffer);
+    } else {
+        d.callback(null);
+    }
+}
+
+/// Simulates a firmware UI closing without delivering its reply.
+pub fn loseDirectoryReply() void {
+    const d = state.directory.?;
+    state.directory = null;
+    @memcpy(state.framebuffer, d.saved);
+    state.gpa.free(d.saved);
+}
+
 /// The g-sensor turned the device: the library rotates the screen when
 /// the app sets the orientation.
 pub fn rotate(orientation: inkview.Orientation) void {
@@ -353,6 +382,14 @@ fn InkViewMain(h: inkview.Handler) callconv(.c) void {
     state.handler = h;
     _ = sendRaw(@backingInt(inkview.Event.init), 0, 0);
     _ = sendRaw(@backingInt(inkview.Event.show), 0, 0);
+}
+
+fn directoryHandler(_: c_int, _: c_int, _: c_int) callconv(.c) c_int {
+    return 0;
+}
+
+fn GetEventHandler() callconv(.c) ?inkview.Handler {
+    return if (state.directory != null) directoryHandler else state.handler;
 }
 
 fn CloseApp() callconv(.c) void {
@@ -525,6 +562,7 @@ fn OpenKeyboard(title: [*:0]const u8, buffer: [*:0]u8, maxlen: c_int, flags: ink
 
 fn OpenDirectorySelector(_: [*:0]const u8, buffer: [*:0]u8, _: c_int, cb: inkview.DirHandler) callconv(.c) void {
     state.directory_requests += 1;
-    // confirms at once with the path it was given
-    cb(buffer);
+    if (state.directory) |d| state.gpa.free(d.saved);
+    state.directory = .{ .buffer = buffer, .callback = cb, .saved = saveScreen() };
+    if (state.options.confirm_directory_immediately) directoryResult(std.mem.span(buffer));
 }
