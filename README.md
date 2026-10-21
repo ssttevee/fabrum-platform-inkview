@@ -47,8 +47,8 @@ process when the app closes.
 ## Adding it to an app
 
 ```sh
-zig fetch --save git+https://github.com/ssttevee/fabrum
-zig fetch --save git+https://github.com/ssttevee/fabrum-platform-inkview
+zig fetch --save git+https://github.com/ssttevee/fabrum#trunk
+zig fetch --save git+https://github.com/ssttevee/fabrum-platform-inkview#trunk
 ```
 
 **fabrum is the app's.** This package does not fetch fabrum for apps: in the
@@ -78,16 +78,20 @@ own tests and example need it (apps bring their own, above).
 
 ```sh
 zig build            # zig-out/pocketbook/ReaderShell.app and ReaderShell-log.app
+zig build app        # the device build step explicitly
 zig build test       # the fake-InkView host tests and the example's Harness tests
 zig build emulator   # zig-out/emulator/ReaderShell, x86_64 Linux (see below)
 ```
 
 The device build is `arm-linux-gnueabi` with glibc 2.23 (dynamic),
-`-Dcpu=cortex_a7`, ReleaseSmall, whatever `-Dtarget` says. What comes out
-(checked with `file` and `llvm-readelf`): a 32-bit ARM EABI5 executable,
+`cortex_a7`, ReleaseSmall by default, whatever `-Dtarget` or `-Dcpu` says.
+`-Ddevice-optimize=small|safe|fast|debug` chooses its optimization; `safe`
+keeps safety checks and symbols for device crash traces. `-Doptimize`
+controls the host tests, the public module and the emulator instead. What
+comes out (checked with `file` and `llvm-readelf`): a 32-bit ARM EABI5 executable,
 soft-float (`e_flags 0x5000200`, no `Tag_ABI_VFP_args`), interpreter
-`/lib/ld-linux.so.3`, no InkView symbol in it, 0.9 MB. The highest glibc
-symbol version it needs is `GLIBC_2.17` (the clock functions), within
+`/lib/ld-linux.so.3`, no linked InkView symbol in it. The size depends on
+optimization and the app. The highest glibc symbol version it needs is `GLIBC_2.17` (the clock functions), within
 6.8's glibc 2.23. There is no 6.9 SDK, but the official Verse 6.9.862
 firmware's root filesystem also has glibc 2.23.
 
@@ -96,8 +100,8 @@ The last two supply std's threaded Io functions and `dlopen`/`dlsym` on
 glibc 2.23; their required versions are all `GLIBC_2.4`. No `librt` is
 needed: the clock functions are in libc at `GLIBC_2.17`. On glibc 2.39
 (6.10), libc supplies the old pthread and dl symbols; the compatibility
-libraries retain their version nodes. All 98 versioned imports were
-checked against the 6.8 and 6.10 B288 sysroots and the official Verse
+libraries retain their version nodes. The versioned imports in the checked
+build were checked against the 6.8 and 6.10 B288 sysroots and the official Verse
 [U629.6.9.862](https://download.pocketbook-int.com/fw/Liangyan/629/user/20250814/sw_20250814_U629_6.9.862_user.zip)
 and [U629.6.10.1461 firmware images](https://download.pocketbook-int.com/fw/Liangyan/629/user/20250826/sw_20250826_U629_6.10.1461_accessibility_eink_user.zip).
 The 6.10 image's root filesystem contains `/lib/libpthread.so.0` and
@@ -168,11 +172,14 @@ InkView update, with the state it needs:
 | `content` (anything else) | `PartialUpdate(rect)` per damage region | GC16, no flash. |
 | `interactive` (a drag, a scroll) | `DynamicUpdate(rect)` for the first `a2_enter_after` frames (2), then `DynamicUpdateA2(rect)` | A short gesture never pays A2's entry and exit. |
 | A2 ends | `FullUpdate()` `a2_exit_delay` (700 ms) after the last interactive frame | What `ExitUpdateA2` does; a hard InkView timer. Content frames meanwhile are gray `DynamicUpdate`s and push the exit out. The framebuffer always holds full grays (nothing is dithered in place), so the full refresh restores them. |
-| Every `full_every` (12) non-flashing updates | `FullUpdate()` | Clears the ghosting partial updates leave, as readers do every few pages. |
-| `EVT_SHOW`, `EVT_REPAINT`, `EVT_FOREGROUND`, `EVT_ORIENTATION` | everything redrawn, `FullUpdate()` (or a whole-screen `PartialUpdate` with `show_refresh = .partial`) | The library restored or rotated the screen under us. |
+| Every `full_every` (12) partial or gray dynamic updates | `FullUpdate()` | Clears the ghosting partial updates leave, as readers do every few pages. |
+| `EVT_SHOW`, `EVT_REPAINT`, `EVT_FOREGROUND` | everything redrawn, `FullUpdate()` (or a whole-screen `PartialUpdate` with `show_refresh = .partial`) | The library restored the screen under us. |
+| `EVT_ORIENTATION` | everything redrawn, `FullUpdate()` | Rotation always requests a page refresh. |
 
-All of it is `Options.refresh`. Without `DynamicUpdateA2` in the library
-gestures stay gray; without `DynamicUpdate` they are partial.
+The policy is configured through `Options.refresh`; A2 frames do not
+advance the periodic cleaning counter. Without `DynamicUpdateA2` in the
+library gestures stay gray. Gray updates fall back to `PartialUpdate`
+when `DynamicUpdate` is missing.
 
 **Framebuffer.** The task framebuffer from `GetCanvas()` (gray8 on the
 B288: one byte per pixel, rows `scanline` apart) is the surface z2d draws
@@ -246,8 +253,8 @@ called off the loop thread.
 | `message` | `Message(icon, title, text, timeout)` | Blocks until the box goes. Timers keep running inside it; a frame they ask for waits until the call is over. The title isn't drawn on 6.8+. |
 | `confirm` | `Dialog3(icon \| DEF_BUTTONn \| DLG_HW_BUTTON, …)` | Buttons answered 1–3 become indices 0–2, -1 (Back) becomes null. One at a time. |
 | `menu` | `OpenMenu(imenu[], 0, x, y, …)` | `ITEM_HEADER`, `ITEM_SEPARATOR`, `ITEM_INACTIVE`, `ITEM_SUBMENU` from the items; `imenu.index` is a position in the tree (a `short`), mapped back to `MenuItem.id`. The strings live until the callback. |
-| `editText` | `OpenKeyboard(title, buffer, maxlen, flags, …)` | `KBD_URL` (url, email), `KBD_NUMERIC`, `KBD_PASSWORD`; `KBD_NOSELECT` so typing appends; `KBD_NOUPDATE_AFTER_CLOSE`. The text (or null for cancel) goes through the `Reply`. Drawn text fields ask for it when tapped, since the keyboard is `on_screen`. |
-| `openDirectory` | `OpenDirectorySelector` | Only on firmware up to 6.5; `error.Unsupported` where the symbol is gone (6.8+). Not counted as modal: it only calls back on confirmation. |
+| `editText` | `OpenKeyboard(title, buffer, maxlen, flags, …)` | `KBD_URL` (url, email), `KBD_NUMERIC`, `KBD_PASSWORD`; `KBD_NOSELECT` so typing appends; `KBD_NOUPDATE_AFTER_CLOSE`. The text (or null for cancel) goes through the `Reply`. Drawn text fields ask for it when tapped, since the keyboard is `on_screen`. `multiline` is ignored. The buffer uses `max_len`, or `Options.text_max_len` (1024) when zero, enlarged to hold the initial text. |
+| `openDirectory` | `OpenDirectorySelector` | Only on firmware up to 6.5; `error.Unsupported` where the symbol is gone (6.8+). Starts at `Options.directory` (`/mnt/ext1`). Not counted as modal: it only calls back on confirmation; cancellation leaves the request pending and prevents another directory chooser. |
 | `openFile` | none | `error.Unsupported`: InkView has no file chooser. A drawn list on `iv_opendir` is future work. |
 | clipboard | none | fabrum's clipboard private to the program. |
 | `quit`, `close` | `CloseApp()` | One window: closing is quitting. |
@@ -263,7 +270,7 @@ sends `EVT_SHOW` on closing, which redraws and refreshes the whole screen;
 
 ## Tests
 
-`zig build test` runs 38 tests without a device:
+`zig build test` runs without a device:
 
 - `refresh.zig`: hint sequences to updates: content/page, the A2
   hysteresis and exit, content during A2, missing functions, the periodic
@@ -354,7 +361,14 @@ Risks:
 - **zg on 32-bit.** fabrum's word segmentation uses its own rules on
   32-bit targets (zg's tables don't build there); graphemes are zg's.
 - **`Message` blocks** inside `update`; a 30-second message freezes the
-  app for 30 seconds.
+  app for 30 seconds. It can also trigger fabrum's default 16 ms view/update
+  watchdog diagnostic (`Runtime.Options.watchdog_ms`); `Options` does not
+  expose an override.
+- **Task shutdown.** The host does not call `runtime.cancelTasks()` on
+  exit. `InkViewMain` ends with `_exit`, so task cancellation and deferred
+  cleanup are not guaranteed to run. Apps using `ctx.run`, `ctx.runKey` or
+  `ui.task` must finish any required saves or other cleanup before asking
+  InkView to close; they cannot rely on task defers at process exit.
 
 ## fabrum gaps found
 
@@ -362,8 +376,8 @@ Found building this package, and fixed in fabrum since:
 
 - No touch pan to scroll a drawn scroll container: only the wheel, the
   scrollbar's thumb and `scrollTo` moved one, so the apps here declared
-  `on_pointer` on the list and called `ctx.scrollTo(.{ .by = … })` from
-  each drag. The runtime pans now when `Capabilities.pointer` is `touch`:
+  `on_pointer` on the list and called
+  `ctx.scrollTo("chapters", .{ .by = … }, .{})` from each drag. The runtime pans now when `Capabilities.pointer` is `touch`:
   a press on a list is a pan past the drag threshold (cancelling the tap,
   even on a row's button), and the apps declare nothing.
 - Scrolls the app asks for (`scrollTo`) were always `content`. They take

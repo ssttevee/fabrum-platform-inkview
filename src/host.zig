@@ -64,7 +64,7 @@ pub const Options = struct {
     /// path on the device, or a path (the emulator's copy).
     library: [*:0]const u8 = "libinkview.so",
     /// TrueType or OpenType fonts for the renderer; the first is the one
-    /// text without a family uses. The data must outlive the app.
+    /// text without a family uses. Names and data must outlive the app.
     fonts: []const Font = &.{},
     /// The look of the drawn widgets. Made high-contrast for the gray
     /// panel by the runtime.

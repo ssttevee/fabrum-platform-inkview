@@ -15,8 +15,9 @@
 //!   wipes the ghosts (what `ExitUpdateA2` does), from a framebuffer that
 //!   always holds full grays, since the host never dithers in place.
 //! - `content` is `PartialUpdate` (GC16, no flash); every
-//!   `Options.full_every` non-flashing updates, one `FullUpdate` clears
-//!   the ghosting they leave, as readers do every few pages.
+//!   `Options.full_every` partial or gray dynamic updates, one `FullUpdate`
+//!   clears the ghosting they leave, as readers do every few pages. A2
+//!   frames do not advance this counter.
 //!
 //! The policy is a value: the host feeds it hints and the clock, and
 //! calls the function it answers with.
@@ -37,8 +38,8 @@ pub const Options = struct {
     /// How long after the last interactive frame A2 ends with a cleaning
     /// full refresh.
     a2_exit_delay: Duration = .fromMilliseconds(700),
-    /// Non-flashing updates between cleaning full refreshes, or 0 for
-    /// never.
+    /// Partial or gray dynamic updates between cleaning full refreshes,
+    /// or 0 for never.
     full_every: u16 = 12,
 };
 
@@ -67,7 +68,7 @@ pub const Policy = struct {
     run: u8 = 0,
     /// Whether A2 frames have been shown since the last full refresh.
     in_a2: bool = false,
-    /// Non-flashing updates since the last full refresh.
+    /// Partial or gray dynamic updates since the last full refresh.
     partials: u16 = 0,
     /// When A2 should end, if it is on.
     exit_due: ?Timestamp = null,

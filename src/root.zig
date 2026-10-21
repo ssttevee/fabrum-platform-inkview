@@ -7,7 +7,9 @@
 //! services.
 //!
 //! ```zig
+//! const std = @import("std");
 //! const inkview = @import("fabrum-platform-inkview");
+//! const Reader = @import("Reader.zig"); // a fabrum.app component
 //! pub fn main(init: std.process.Init) !void {
 //!     try inkview.run(Reader, init.gpa, init.io, .{}, .{
 //!         .fonts = &.{.{ .name = "Go", .data = @embedFile("fonts/Go-Regular.ttf") }},
@@ -21,8 +23,9 @@
 //! its build.zig.
 //!
 //! `libinkview.so` is loaded at run time (`inkview.Api.load`), so the
-//! binary links only glibc and runs on every firmware that has the
-//! functions it needs, doing without the optional ones.
+//! binary links glibc (including libpthread/libdl on older glibc), not
+//! the SDK. Firmware must provide the required symbols and a compatible
+//! target ABI and libc; missing optional symbols are left null.
 const std = @import("std");
 
 const host = @import("host.zig");

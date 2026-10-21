@@ -1,7 +1,8 @@
 //! The InkView functions this package calls, typed, and how they are
 //! reached: resolved at run time from `libinkview.so` with `std.DynLib`
 //! (`Api.load`), so nothing of the SDK is linked and a function a firmware
-//! lacks is a null in `Api`, not a loader error at start-up.
+//! lacks is null only when it is optional in `Api`. A missing required
+//! function fails loading with `error.MissingSymbol`.
 //!
 //! Only what the host needs is bound; signatures and constants come from
 //! `sdk/6.10/B288/include/inkview.h` (the Verse's firmware line) and
