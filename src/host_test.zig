@@ -786,3 +786,114 @@ test "host watchdog options reach the runtime, including both disable values" {
         try testing.expectEqual(budget, host().runtime.core.watchdog_ms);
     }
 }
+
+const WakeWorker = struct {
+    started: std.Io.Event = .unset,
+    release: std.Io.Event = .unset,
+    fn run(task: *app.Task, worker: *WakeWorker) std.Io.Cancelable!void {
+        worker.started.set(task.io);
+        worker.release.waitUncancelable(task.io);
+        try task.checkCancel();
+    }
+};
+const WakeProbe = struct {
+    pub const State = struct { finished: bool = false, ticks: usize = 0 };
+    pub const Props = struct { worker: *WakeWorker, tick_ms: ?i64 = null };
+    pub const Msg = union(enum) { done: std.Io.Cancelable!void, tick };
+    pub fn update(state: *State, msg: Msg, _: *app.Update(WakeProbe)) !void {
+        switch (msg) {
+            .done => |result| {
+                try result;
+                state.finished = true;
+            },
+            .tick => state.ticks += 1,
+        }
+    }
+    pub fn view(ui: *app.Ui, state: *const State, props: Props) !void {
+        const on = ui.messages(WakeProbe);
+        try ui.task("worker", .{}, WakeWorker.run, .{props.worker}, on.handler(.done));
+        if (props.tick_ms) |ms| try ui.every("tick", .fromMilliseconds(ms), on.bind(.tick));
+        try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}) }, .background_color = if (state.finished) .black else .white });
+        ui.close();
+    }
+};
+const WakeHost = root.App(WakeProbe);
+var task_activity_current: bool = false;
+var task_activity_true_calls: usize = 0;
+fn observeTaskActivity(pending: bool) void {
+    task_activity_current = pending;
+    if (pending) task_activity_true_calls += 1;
+}
+fn dropWorkerWake(_: inkview.Handler, _: c_int, _: c_int, _: c_int) callconv(.c) void {}
+
+fn startWakeProbe(worker: *WakeWorker, tick_ms: ?i64) !void {
+    var api = fake.api();
+    api.SendEvent = dropWorkerWake;
+    try WakeHost.run(testing.allocator, testing.io, api, .{ .worker = worker, .tick_ms = tick_ms }, .{
+        .clock = fake.clock,
+        .task_activity = observeTaskActivity,
+    });
+}
+
+test "pending tasks reach the framebuffer within 100ms when worker wakes are lost" {
+    try fake.init(testing.allocator, .{ .width = 64, .height = 64 });
+    defer fake.deinit();
+    task_activity_current = false;
+    task_activity_true_calls = 0;
+    var worker: WakeWorker = .{};
+    try startWakeProbe(&worker, null);
+    defer WakeHost.instance.deinit();
+    defer worker.release.set(testing.io);
+    try worker.started.wait(testing.io);
+    try testing.expect(task_activity_current);
+    try testing.expect(fake.timer("fabrum-frame").?.hard);
+    try testing.expect(fake.timer("fabrum-frame").?.due_ms <= 100);
+    fake.advance(100); // The activity hook renews an outstanding sleep ban.
+    try testing.expect(task_activity_true_calls >= 2);
+    const record = WakeHost.instance.runtime.core.tasks.records.items[0];
+    worker.release.set(testing.io);
+    for (0..5000) |_| {
+        if (record.done.load(.acquire)) break;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try testing.expect(record.done.load(.acquire));
+    try testing.expect(!WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+    fake.advance(100);
+    try testing.expect(WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+    try testing.expectEqual(@as(u8, 0), fake.state.framebuffer[0]);
+    try testing.expect(!task_activity_current);
+    try testing.expect(fake.timer("fabrum-frame") == null);
+    try testing.expect(!WakeHost.instance.wake_pending.load(.acquire));
+    fake.clearUpdates();
+    _ = fake.send(@fromBackingInt(root.wake_event), 0, 0); // A late queued wake is harmless.
+    try testing.expectEqual(@as(usize, 0), fake.state.updates.items.len);
+    try testing.expect(fake.timer("fabrum-frame") == null);
+}
+
+test "pending task fallback preserves earlier declared timer deadlines" {
+    try fake.init(testing.allocator, .{ .width = 64, .height = 64 });
+    defer fake.deinit();
+    var worker: WakeWorker = .{};
+    try startWakeProbe(&worker, 40);
+    defer WakeHost.instance.deinit();
+    defer worker.release.set(testing.io);
+    try worker.started.wait(testing.io);
+    try testing.expect(fake.timer("fabrum-frame").?.due_ms <= 40);
+    fake.advance(40);
+    try testing.expectEqual(@as(usize, 1), WakeHost.instance.runtime.rootState(WakeProbe).?.ticks);
+    fake.advance(40);
+    try testing.expectEqual(@as(usize, 2), WakeHost.instance.runtime.rootState(WakeProbe).?.ticks);
+}
+
+test "task activity ends after exit has joined the running worker" {
+    task_activity_current = false;
+    var worker: ExitWorker = .{};
+    try start(.{ .props = .{ .worker = &worker }, .host = .{ .task_activity = observeTaskActivity } });
+    defer stop();
+    try worker.started.wait(testing.io);
+    try testing.expect(task_activity_current);
+    _ = fake.send(.exit, 0, 0);
+    try testing.expect(worker.finished.load(.acquire));
+    try testing.expect(!task_activity_current);
+    try testing.expect(fake.timer("fabrum-frame") == null);
+}

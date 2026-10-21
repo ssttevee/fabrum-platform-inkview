@@ -101,6 +101,10 @@ pub const Options = struct {
     /// Hard timers wake the device for the frame; weak ones run only while
     /// it is awake anyway.
     frame_timer: enum { hard, weak } = .hard,
+    /// Main-thread activity hook while declared tasks or their cleanup are
+    /// pending. Called again on fallback ticks so hosts can renew sleep bans,
+    /// and with false after workers are joined at shutdown.
+    task_activity: ?*const fn (bool) void = null,
     /// How the whole screen is refreshed when the library asks for a
     /// redraw (`EVT_SHOW` after the keyboard closes, `EVT_REPAINT`,
     /// coming back to the foreground): a cleaning flash, or quietly.
@@ -247,6 +251,7 @@ pub fn App(comptime Root: type) type {
         /// Frees everything, for hosts whose library returns (tests).
         pub fn deinit(self: *Self) void {
             self.runtime.deinit();
+            if (self.options.task_activity) |activity| activity(false);
             self.renderer.deinit();
             self.gpa.free(self.screen.private);
             if (self.open_dialog) |*d| self.freeDialog(d);
@@ -602,16 +607,32 @@ pub fn App(comptime Root: type) type {
 
         // Timers
 
+        fn hasPendingTasks(self: *const Self) bool {
+            if (@hasDecl(Runtime, "hasPendingTasks")) return self.runtime.hasPendingTasks();
+            // Apps supply their own fabrum. Older versions already expose
+            // the records but do not yet provide the readiness query.
+            for (self.runtime.core.tasks.records.items) |record| if (!record.reclaimed) return true;
+            return false;
+        }
+
         fn armFrameTimer(self: *Self) void {
-            const due = self.runtime.nextFrame() orelse {
+            const pending = self.hasPendingTasks();
+            if (self.options.task_activity) |activity| activity(pending);
+            const ms = if (self.runtime.nextFrame()) |due|
+                if (pending) @min(self.millisUntil(due), 100) else self.millisUntil(due)
+            else if (pending)
+                100
+            else {
                 if (self.frame_timer_armed) {
                     self.api.ClearTimer(frameTimer);
                     self.frame_timer_armed = false;
                 }
                 return;
             };
-            const ms = self.millisUntil(due);
-            const set = switch (self.options.frame_timer) {
+            // Some firmware queues SendEvent from workers without promptly
+            // waking its idle loop. A hard timer bounds completion delivery,
+            // and disappears as soon as task resources have been collected.
+            const set = if (pending) self.api.SetHardTimer else switch (self.options.frame_timer) {
                 .hard => self.api.SetHardTimer,
                 .weak => self.api.SetWeakTimer,
             };
@@ -622,6 +643,9 @@ pub fn App(comptime Root: type) type {
         fn frameTimer() callconv(.c) void {
             const self = &instance;
             self.frame_timer_armed = false;
+            // A timer also services any queued custom wake. Do not leave a
+            // dropped SendEvent suppressing subsequent worker notifications.
+            self.wake_pending.store(false, .release);
             self.frames() catch |err| log.err("frame timer: {t}", .{err});
         }
 
@@ -874,6 +898,7 @@ pub fn App(comptime Root: type) type {
             self.api.ClearTimer(a2Timer);
             self.frame_timer_armed = false;
             self.runtime.cancelTasks();
+            if (self.options.task_activity) |activity| activity(false);
         }
 
         fn close(self: *Self) void {
