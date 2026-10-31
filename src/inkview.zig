@@ -221,6 +221,7 @@ pub const Api = struct {
     SetOrientation: *const fn (Orientation) callconv(.c) void,
     SetPanelType: *const fn (PanelType) callconv(.c) void,
     PanelHeight: *const fn () callconv(.c) c_int,
+    DrawPanel: ?*const fn (?*const anyopaque, ?[*:0]const u8, ?[*:0]const u8, c_int) callconv(.c) c_int = null,
     Stretch: *const fn ([*]const u8, c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int) callconv(.c) void,
 
     // updates

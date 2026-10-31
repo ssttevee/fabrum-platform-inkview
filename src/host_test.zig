@@ -638,7 +638,7 @@ test "a framebuffer that isn't gray8 is blitted from a private buffer" {
 test "the status panel's height is left out of the viewport when it is shown" {
     try start(.{ .host = .{ .panel = .shown } });
     defer stop();
-    try testing.expectEqual(inkview.PanelType{ .enabled = true }, fake.state.panel_type);
+    try testing.expectEqual(inkview.PanelType{ .enabled = true, .no_fb_offset = true }, fake.state.panel_type);
     try testing.expectEqual(1024 - 40, host().screen.height);
     try testing.expectApproxEqAbs((1024.0 - 40) / scale(), host().screen.viewport().y, 0.5);
 }
@@ -931,4 +931,28 @@ test "task fallback can be disabled without losing activity or ordinary timers" 
         try testing.expect(!task_activity_current);
         if (tick_ms == null) try testing.expect(fake.timer("fabrum-frame") == null);
     }
+}
+
+test "native panel survives app drawing and dynamic fullscreen transitions" {
+    try start(.{ .host = .{ .panel = .shown } });
+    defer stop();
+    _ = fake.send(.show, 0, 0);
+    try testing.expect(fake.state.panel_draws > 0);
+    try testing.expectEqual(40, host().screen.top);
+    for (fake.row(0)) |pixel| try testing.expectEqual(73, pixel);
+    for (fake.row(39)) |pixel| try testing.expectEqual(73, pixel);
+    const at = try locate("Pick");
+    fake.tap(at.x, at.y + 40);
+    try testing.expectEqual(1, probe().picks);
+    for (fake.state.updates.items) |update| if (update.kind != .full) {
+        try testing.expect(update.y >= 40);
+        try testing.expect(update.y + update.h <= 1024);
+    };
+    try host().setPanelVisible(false);
+    try testing.expectEqual(0, host().screen.top);
+    try testing.expectEqual(1024, host().screen.height);
+    try host().setPanelVisible(true);
+    try testing.expectEqual(40, host().screen.top);
+    try testing.expectEqual(984, host().screen.height);
+    for (fake.row(0)) |pixel| try testing.expectEqual(73, pixel);
 }

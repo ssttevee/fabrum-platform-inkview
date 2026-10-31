@@ -109,6 +109,7 @@ pub const State = struct {
     directory: ?struct { buffer: [*:0]u8, callback: inkview.DirHandler, saved: []u8 } = null,
     orientation_sets: std.ArrayList(inkview.Orientation) = .empty,
     stretches: usize = 0,
+    panel_draws: usize = 0,
     closed: bool = false,
     /// How many times the handler was entered, for re-entrancy checks.
     depth: u32 = 0,
@@ -191,6 +192,7 @@ pub fn api() inkview.Api {
         .SetOrientation = SetOrientation,
         .SetPanelType = SetPanelType,
         .PanelHeight = PanelHeight,
+        .DrawPanel = DrawPanel,
         .Stretch = Stretch,
         .FullUpdate = FullUpdate,
         .PartialUpdate = PartialUpdate,
@@ -483,6 +485,15 @@ fn SetOrientation(n: inkview.Orientation) callconv(.c) void {
 
 fn SetPanelType(t: inkview.PanelType) callconv(.c) void {
     state.panel_type = t;
+}
+
+fn DrawPanel(_: ?*const anyopaque, _: ?[*:0]const u8, _: ?[*:0]const u8, _: c_int) callconv(.c) c_int {
+    state.panel_draws += 1;
+    const stride: usize = @intCast(state.canvas.scanline);
+    for (0..@as(usize, @intCast(state.options.panel_height))) |y| {
+        @memset(state.framebuffer[y * stride ..][0..@intCast(state.width)], 73);
+    }
+    return state.options.panel_height;
 }
 
 fn PanelHeight() callconv(.c) c_int {

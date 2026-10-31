@@ -185,6 +185,7 @@ pub fn App(comptime Root: type) type {
         const Screen = struct {
             width: u32 = 0,
             height: u32 = 0,
+            top: u32 = 0,
             scale: f32 = 1,
             /// The task framebuffer, when it is gray8 and big enough.
             canvas: ?*inkview.Canvas = null,
@@ -412,7 +413,7 @@ pub fn App(comptime Root: type) type {
         fn start(self: *Self) !void {
             self.api.SetPanelType(switch (self.options.panel) {
                 .hidden => .disabled,
-                .shown => .{ .enabled = true },
+                .shown => .{ .enabled = true, .no_fb_offset = true },
             });
             if (self.options.orientation) |o| self.api.SetOrientation(o);
             self.screen.scale = self.options.scale orelse blk: {
@@ -442,9 +443,10 @@ pub fn App(comptime Root: type) type {
         /// dimensions are reacquired before drawing or the next input event.
         /// Safe during a view callback: discard that frame and lay out again.
         pub fn setPanelVisible(self: *Self, shown: bool) !void {
-            self.api.SetPanelType(if (shown) .{ .enabled = true } else .disabled);
+            self.options.panel = if (shown) .shown else .hidden;
+            self.api.SetPanelType(if (shown) .{ .enabled = true, .no_fb_offset = true } else .disabled);
             try self.readGeometry();
-            self.stale = .content;
+            self.stale = .page;
             self.deferred = true;
             if (!self.in_runtime) requestFrame(self);
         }
@@ -454,12 +456,13 @@ pub fn App(comptime Root: type) type {
         fn readGeometry(self: *Self) !void {
             const width: u32 = @intCast(@max(self.api.ScreenWidth(), 0));
             var height: u32 = @intCast(@max(self.api.ScreenHeight(), 0));
-            if (self.options.panel == .shown) height -|= @intCast(@max(self.api.PanelHeight(), 0));
+            self.screen.top = if (self.options.panel == .shown) @min(height, @as(u32, @intCast(@max(self.api.PanelHeight(), 0)))) else 0;
+            height -= self.screen.top;
             self.screen.width = width;
             self.screen.height = height;
             self.screen.canvas = null;
             if (self.api.GetCanvas()) |canvas| {
-                if (canvas.depth == 8 and canvas.addr != null and canvas.width >= width and canvas.height >= height and canvas.scanline >= width) {
+                if (canvas.depth == 8 and canvas.addr != null and canvas.width >= width and canvas.height >= height + self.screen.top and canvas.scanline >= width) {
                     self.screen.canvas = canvas;
                 }
             }
@@ -475,7 +478,7 @@ pub fn App(comptime Root: type) type {
             if (self.screen.canvas) |canvas| {
                 const stride: u32 = @intCast(canvas.scanline);
                 return .{
-                    .data = canvas.addr.?[0 .. @as(usize, stride) * self.screen.height],
+                    .data = canvas.addr.?[@as(usize, stride) * self.screen.top ..][0 .. @as(usize, stride) * self.screen.height],
                     .width = self.screen.width,
                     .height = self.screen.height,
                     .stride = stride,
@@ -487,7 +490,7 @@ pub fn App(comptime Root: type) type {
         }
 
         fn point(self: *const Self, x: c_int, y: c_int) Vec2 {
-            return .init(@as(f32, @floatFromInt(x)) / self.screen.scale, @as(f32, @floatFromInt(y)) / self.screen.scale);
+            return .init(@as(f32, @floatFromInt(x)) / self.screen.scale, (@as(f32, @floatFromInt(y)) - @as(f32, @floatFromInt(self.screen.top))) / self.screen.scale);
         }
 
         /// The primary button down: what a finger on the panel is.
@@ -588,8 +591,13 @@ pub fn App(comptime Root: type) type {
             if (self.screen.canvas == null) {
                 const w: c_int = @intCast(self.screen.width);
                 const h: c_int = @intCast(self.screen.height);
-                self.api.Stretch(self.screen.private.ptr, inkview.image_gray8, w, h, w, 0, 0, w, h, 0);
+                self.api.Stretch(self.screen.private.ptr, inkview.image_gray8, w, h, w, 0, @intCast(self.screen.top), w, h, 0);
             }
+            // The native panel shares the framebuffer. Paint it after app drawing,
+            // including after a full redraw or returning from fullscreen.
+            if (self.options.panel == .shown) if (self.api.DrawPanel) |draw| {
+                _ = draw(null, null, null, 0);
+            };
             if (!self.active) return;
             const update = self.policy.decide(hint, self.now(), self.available());
             self.apply(update, regions);
@@ -617,7 +625,7 @@ pub fn App(comptime Root: type) type {
             const x1: c_int = @intFromFloat(@min(@ceil((r.x + r.w) * s), @as(f32, @floatFromInt(self.screen.width))));
             const y1: c_int = @intFromFloat(@min(@ceil((r.y + r.h) * s), @as(f32, @floatFromInt(self.screen.height))));
             if (x1 <= x0 or y1 <= y0) return;
-            f(x0, y0, x1 - x0, y1 - y0);
+            f(x0, y0 + @as(c_int, @intCast(self.screen.top)), x1 - x0, y1 - y0);
         }
 
         // Timers
@@ -774,7 +782,7 @@ pub fn App(comptime Root: type) type {
             self.open_menu = m;
             self.modal += 1;
             const s = self.screen.scale;
-            self.api.OpenMenu(top.ptr, 0, @intFromFloat(@round(request.at.x * s)), @intFromFloat(@round(request.at.y * s)), menuChosen);
+            self.api.OpenMenu(top.ptr, 0, @intFromFloat(@round(request.at.x * s)), @as(c_int, @intFromFloat(@round(request.at.y * s))) + @as(c_int, @intCast(self.screen.top)), menuChosen);
         }
 
         fn buildMenu(m: *Menu, items: []const app.platform.MenuItem) Error![]inkview.MenuItem {
