@@ -438,6 +438,17 @@ pub fn App(comptime Root: type) type {
             };
         }
 
+        /// Change panel visibility through the host so moved canvases and
+        /// dimensions are reacquired before drawing or the next input event.
+        /// Safe during a view callback: discard that frame and lay out again.
+        pub fn setPanelVisible(self: *Self, shown: bool) !void {
+            self.api.SetPanelType(if (shown) .{ .enabled = true } else .disabled);
+            try self.readGeometry();
+            self.stale = .content;
+            self.deferred = true;
+            if (!self.in_runtime) requestFrame(self);
+        }
+
         /// Reads the screen's size and finds the framebuffer; the size
         /// changes with the orientation, the canvas may move.
         fn readGeometry(self: *Self) !void {
@@ -556,7 +567,7 @@ pub fn App(comptime Root: type) type {
                     if (count > 0) self.held = true;
                     break;
                 }
-                if (count > 0) try self.present();
+                if (count > 0 and !self.deferred) try self.present();
                 if (!self.deferred) break;
             }
             self.armFrameTimer();
