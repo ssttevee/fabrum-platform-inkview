@@ -120,7 +120,9 @@ pub const Policy = struct {
     }
 
     fn nonFlashing(self: *Policy, update: Update) Update {
-        self.partials += 1;
+        // A disabled cleaning cadence must not overflow after 65,536 frames.
+        // Saturate so enabling a cadence later still cleans accumulated damage.
+        self.partials +|= 1;
         if (self.options.full_every > 0 and self.partials >= self.options.full_every) {
             self.reset();
             return .full;
@@ -200,4 +202,30 @@ test "the periodic full refresh counts interactive frames too, and never with fu
     try testing.expectEqual(Update.full, p.decide(.interactive, at(1), .{}));
     var never: Policy = .{ .options = .{ .full_every = 0 } };
     for (0..100) |i| try testing.expectEqual(Update.partial, never.decide(.content, at(@intCast(i)), .{}));
+}
+
+test "disabled cleaning survives more than 65536 partial and dynamic updates" {
+    var p: Policy = .{ .options = .{ .full_every = 0, .interactive = .dynamic } };
+    for (0..70_000) |i| {
+        const interactive = i % 2 == 0;
+        try testing.expectEqual(if (interactive) Update.dynamic else Update.partial, p.decide(if (interactive) .interactive else .content, at(@intCast(i)), .{}));
+    }
+    try testing.expectEqual(std.math.maxInt(u16), p.partials);
+    p.options.full_every = std.math.maxInt(u16);
+    try testing.expectEqual(Update.full, p.decide(.content, at(70_000), .{}));
+    try testing.expectEqual(0, p.partials);
+    try testing.expectEqual(Update.partial, p.decide(.content, at(70_001), .{}));
+    try testing.expectEqual(Update.full, p.decide(.page, at(70_002), .{}));
+    try testing.expectEqual(0, p.partials);
+}
+
+test "largest enabled cleaning cadence resets before overflow on repeated cycles" {
+    var p: Policy = .{ .options = .{ .full_every = std.math.maxInt(u16) } };
+    for (0..2) |_| {
+        for (0..std.math.maxInt(u16) - 1) |i| {
+            try testing.expectEqual(Update.partial, p.decide(.content, at(@intCast(i)), .{}));
+        }
+        try testing.expectEqual(Update.full, p.decide(.content, at(70_000), .{}));
+        try testing.expectEqual(0, p.partials);
+    }
 }
