@@ -1132,3 +1132,96 @@ test "native and rescued cleanup wakes retain canceled ownership and discard inv
         try testing.expect(fake.timer("fabrum-frame") == null);
     }
 }
+
+const TimingLog = struct {
+    samples: [512]root.timing.Sample = undefined,
+    len: usize = 0,
+    overflow: bool = false,
+    fn emit(context: ?*anyopaque, sample: root.timing.Sample) void {
+        const self: *TimingLog = @ptrCast(@alignCast(context.?));
+        if (self.len == self.samples.len) {
+            self.overflow = true;
+            return;
+        }
+        self.samples[self.len] = sample;
+        self.len += 1;
+    }
+    fn last(self: *const TimingLog, phase: root.timing.Phase) ?root.timing.Sample {
+        var i = self.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.samples[i].phase == phase) return self.samples[i];
+        }
+        return null;
+    }
+    fn full() callconv(.c) void {
+        fake.state.now_ms += 17; // Model a blocking SDK refresh submission.
+        fake.api().FullUpdate();
+    }
+    fn partial(x: c_int, y: c_int, w: c_int, h: c_int) callconv(.c) void {
+        fake.state.now_ms += 11;
+        fake.api().PartialUpdate(x, y, w, h);
+    }
+};
+
+test "host timing includes blocking presentation and exactly accounts panel-offset submissions" {
+    var trace: TimingLog = .{};
+    try start(.{ .host = .{ .panel = .shown, .scale = 1.5, .timing = .{ .context = &trace, .emit = TimingLog.emit } } });
+    defer stop();
+    host().api.FullUpdate = TimingLog.full;
+    host().api.PartialUpdate = TimingLog.partial;
+    trace.len = 0;
+    fake.clearUpdates();
+    _ = fake.send(.repaint, 0, 0);
+    const full = trace.last(.present).?;
+    try testing.expectEqual(root.refresh.Update.full, full.update.?);
+    try testing.expectEqual(1, full.rectangles);
+    try testing.expectEqual(@as(u64, 758 * 1024), full.area_px);
+    try testing.expectEqual(full.area_px, full.screen_area_px);
+    try testing.expectEqual(17 * std.time.ns_per_ms, full.elapsed_ns);
+    const event = trace.last(.event).?;
+    try testing.expectEqual(@backingInt(inkview.Event.repaint), event.event_kind.?);
+    try testing.expectEqual(17 * std.time.ns_per_ms, event.elapsed_ns);
+    try testing.expectEqual(0, event.parent_id);
+    try testing.expectEqual(event.id, trace.last(.frames).?.parent_id);
+    try testing.expectEqual(trace.last(.frames).?.id, full.parent_id);
+    try testing.expect(trace.last(.dispatch_updates) != null);
+    try testing.expect(trace.last(.runtime_update_layout) != null);
+    try testing.expect(trace.last(.damage) != null);
+    try testing.expect(trace.last(.raster) != null);
+    try testing.expect(trace.last(.composite) != null);
+    trace.len = 0;
+    fake.clearUpdates();
+    const at_ = try locate("Pick");
+    fake.tap(at_.x, at_.y + 40);
+    var rectangles: u64 = 0;
+    var area: u64 = 0;
+    var elapsed: i96 = 0;
+    for (trace.samples[0..trace.len]) |sample| if (sample.phase == .present) {
+        try testing.expectEqual(root.refresh.Update.partial, sample.update.?);
+        rectangles += sample.rectangles;
+        area += sample.area_px;
+        elapsed += sample.elapsed_ns;
+    };
+    var actual_area: u64 = 0;
+    for (fake.state.updates.items) |update| {
+        try testing.expectEqual(fake.Update.Kind.partial, update.kind);
+        try testing.expect(update.y >= 40);
+        try testing.expect(update.y + update.h <= 1024);
+        actual_area += @as(u64, @intCast(update.w)) * @as(u64, @intCast(update.h));
+    }
+    try testing.expect(rectangles > 0);
+    try testing.expectEqual(fake.state.updates.items.len, rectangles);
+    try testing.expectEqual(actual_area, area);
+    try testing.expectEqual(@as(i96, @intCast(rectangles)) * 11 * std.time.ns_per_ms, elapsed);
+    try testing.expect(!trace.overflow);
+    try testing.expectEqual(0, host().trace.parent_id);
+    // A background repaint rasterizes but never claims a refresh submission.
+    _ = fake.send(.background, 0, 0);
+    trace.len = 0;
+    fake.clearUpdates();
+    _ = fake.send(.repaint, 0, 0);
+    try testing.expect(trace.last(.raster) != null);
+    try testing.expect(trace.last(.present) == null);
+    try testing.expectEqual(@as(usize, 0), fake.state.updates.items.len);
+}

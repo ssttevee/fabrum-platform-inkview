@@ -51,6 +51,7 @@ const Renderer = @import("fabrum-renderer-z2d");
 
 const inkview = @import("inkview.zig");
 const refresh = @import("refresh.zig");
+const timing = @import("timing.zig");
 const KeyMap = @import("keys.zig").KeyMap;
 
 const log = std.log.scoped(.fabrum_inkview);
@@ -122,6 +123,9 @@ pub const Options = struct {
     /// Null or zero disables it. Blocking InkView Message dialogs exceed
     /// the default 16 ms budget; raise or disable it when using them.
     watchdog_ms: ?u32 = 16,
+    /// Opt-in host timing and submitted refresh area statistics. Null adds no
+    /// timing clock reads or logging. This cannot measure physical panel latency.
+    timing: ?timing.Sink = null,
     /// Root values for the app, as `Runtime.Options.provide`.
     provide: []const app.RootValue = &.{},
     /// Capacity of the layout built each frame, as `Runtime.Options.context`:
@@ -156,6 +160,7 @@ pub fn App(comptime Root: type) type {
         runtime: Runtime,
         renderer: Renderer,
         policy: refresh.Policy,
+        trace: timing.Recorder = .{},
         screen: Screen = .{},
         /// Whether the app is the active task; updates from a background
         /// task are dropped by the system anyway.
@@ -246,6 +251,7 @@ pub fn App(comptime Root: type) type {
                 .runtime = undefined,
                 .renderer = try .init(gpa),
                 .policy = .{ .options = options.refresh },
+                .trace = .{ .sink = options.timing },
             };
             errdefer self.renderer.deinit();
             for (options.fonts) |font| try self.renderer.loadFont(font.name, font.data);
@@ -300,6 +306,12 @@ pub fn App(comptime Root: type) type {
 
         /// Delivers the event to the runtime, then runs the frames due.
         fn handle(self: *Self, event: inkview.Event, par1: c_int, par2: c_int) !c_int {
+            var span = self.beginTiming(.event);
+            if (span) |*sample| sample.event_kind = @backingInt(event);
+            defer self.endTiming(span);
+            errdefer if (span) |*sample| {
+                sample.failed = true;
+            };
             // Message can pump EVT_EXIT while an update is still running.
             // Cleanup must happen even then: InkView will call _exit next.
             if (event == .exit) {
@@ -309,11 +321,37 @@ pub fn App(comptime Root: type) type {
             if (self.exiting) return 0;
             if (self.in_runtime) return self.reentered(event);
             self.in_runtime = true;
-            const result = self.dispatch(event, par1, par2);
+            const result = self.dispatchTimed(event, par1, par2);
             self.in_runtime = false;
             const taken = (try result) orelse return 0;
             try self.frames();
             return @intFromBool(taken);
+        }
+
+        fn beginTiming(self: *Self, phase: timing.Phase) ?timing.Sample {
+            return self.trace.begin(self.io, self.options.clock, phase);
+        }
+
+        fn endTiming(self: *Self, sample: ?timing.Sample) void {
+            self.trace.end(self.io, self.options.clock, sample);
+        }
+
+        fn dispatchTimed(self: *Self, event: inkview.Event, par1: c_int, par2: c_int) !?bool {
+            var span = self.beginTiming(.dispatch_updates);
+            defer self.endTiming(span);
+            errdefer if (span) |*sample| {
+                sample.failed = true;
+            };
+            return self.dispatch(event, par1, par2);
+        }
+
+        fn runtimeFrame(self: *Self, now_: Io.Timestamp) !void {
+            var span = self.beginTiming(.runtime_update_layout);
+            defer self.endTiming(span);
+            errdefer if (span) |*sample| {
+                sample.failed = true;
+            };
+            _ = try self.runtime.frame(Root, self.props, self.screen.viewport(), now_);
         }
 
         /// An event delivered while the runtime is busy: `Message` pumps
@@ -536,6 +574,11 @@ pub fn App(comptime Root: type) type {
         /// UI is up or a frame is already running (a timer firing inside a
         /// blocking `Message`), in which case the frame waits.
         fn frames(self: *Self) !void {
+            var span = self.beginTiming(.frames);
+            defer self.endTiming(span);
+            errdefer if (span) |*sample| {
+                sample.failed = true;
+            };
             if (self.exiting) return;
             // The selector restored our handler without answering. Treat
             // that as cancellation before a stale modal can hold frames.
@@ -564,7 +607,7 @@ pub fn App(comptime Root: type) type {
                 while (self.runtime.nextFrame()) |due| {
                     const t = self.now();
                     if (due.nanoseconds > t.nanoseconds or count == 4) break;
-                    _ = try self.runtime.frame(Root, self.props, self.screen.viewport(), t);
+                    try self.runtimeFrame(t);
                     if (self.exiting) {
                         // An update may request close before its view has
                         // declared tasks. Join those too before returning.
@@ -577,7 +620,7 @@ pub fn App(comptime Root: type) type {
                 if ((self.stale != null or service_tasks) and count == 0 and self.modal == 0) {
                     // Stale commands need layout. Task ticks also collect canceled
                     // workers with no result message and launch blocked successors.
-                    _ = try self.runtime.frame(Root, self.props, self.screen.viewport(), self.now());
+                    try self.runtimeFrame(self.now());
                     if (self.exiting) {
                         self.stopTasks();
                         return;
@@ -600,7 +643,14 @@ pub fn App(comptime Root: type) type {
 
         /// Draws the damage of the last frames and refreshes it.
         fn present(self: *Self) !void {
-            var regions = try self.runtime.damage();
+            var regions = blk: {
+                var span = self.beginTiming(.damage);
+                defer self.endTiming(span);
+                errdefer if (span) |*sample| {
+                    sample.failed = true;
+                };
+                break :blk try self.runtime.damage();
+            };
             var hint = self.runtime.refresh();
             const whole: [1]Rect = .{.init(0, 0, self.screen.viewport().x, self.screen.viewport().y)};
             if (self.stale) |at_least| {
@@ -609,7 +659,24 @@ pub fn App(comptime Root: type) type {
                 self.stale = null;
             }
             if (regions.len == 0 or self.screen.width == 0 or self.screen.height == 0) return;
-            try layout.draw(&self.renderer, self.runtime.commands(), .pixels, self.pixels(), regions);
+            {
+                var span = self.beginTiming(.raster);
+                defer self.endTiming(span);
+                errdefer if (span) |*sample| {
+                    sample.failed = true;
+                };
+                try layout.draw(&self.renderer, self.runtime.commands(), .pixels, self.pixels(), regions);
+            }
+            self.composite();
+            if (!self.active) return;
+            const update = self.policy.decide(hint, self.now(), self.available());
+            self.apply(update, regions);
+            self.armA2Timer();
+        }
+
+        fn composite(self: *Self) void {
+            const span = self.beginTiming(.composite);
+            defer self.endTiming(span);
             if (self.screen.canvas == null) {
                 const w: c_int = @intCast(self.screen.width);
                 const h: c_int = @intCast(self.screen.height);
@@ -620,10 +687,6 @@ pub fn App(comptime Root: type) type {
             if (self.options.panel == .shown) if (self.api.DrawPanel) |draw| {
                 _ = draw(null, null, null, 0);
             };
-            if (!self.active) return;
-            const update = self.policy.decide(hint, self.now(), self.available());
-            self.apply(update, regions);
-            self.armA2Timer();
         }
 
         fn available(self: *const Self) refresh.Available {
@@ -632,21 +695,37 @@ pub fn App(comptime Root: type) type {
 
         /// Calls the update function for `regions`, in points.
         fn apply(self: *Self, update: refresh.Update, regions: []const Rect) void {
+            var span = self.beginTiming(.present);
+            defer self.endTiming(span);
+            if (span) |*sample| {
+                sample.update = update;
+                sample.screen_area_px = @as(u64, self.screen.width) * (self.screen.height + self.screen.top);
+            }
             switch (update) {
-                .full => self.api.FullUpdate(),
-                .partial => for (regions) |r| self.updateRect(self.api.PartialUpdate, r),
-                .dynamic => for (regions) |r| self.updateRect(self.api.DynamicUpdate orelse self.api.PartialUpdate, r),
-                .a2 => for (regions) |r| self.updateRect(self.api.DynamicUpdateA2 orelse self.api.PartialUpdate, r),
+                .full => {
+                    if (span) |*sample| {
+                        sample.rectangles = 1;
+                        sample.area_px = sample.screen_area_px;
+                    }
+                    self.api.FullUpdate();
+                },
+                .partial => for (regions) |r| self.updateRect(self.api.PartialUpdate, r, &span),
+                .dynamic => for (regions) |r| self.updateRect(self.api.DynamicUpdate orelse self.api.PartialUpdate, r, &span),
+                .a2 => for (regions) |r| self.updateRect(self.api.DynamicUpdateA2 orelse self.api.PartialUpdate, r, &span),
             }
         }
 
-        fn updateRect(self: *const Self, f: *const fn (c_int, c_int, c_int, c_int) callconv(.c) void, r: Rect) void {
+        fn updateRect(self: *const Self, f: *const fn (c_int, c_int, c_int, c_int) callconv(.c) void, r: Rect, span: *?timing.Sample) void {
             const s = self.screen.scale;
             const x0: c_int = @intFromFloat(@max(@floor(r.x * s), 0));
             const y0: c_int = @intFromFloat(@max(@floor(r.y * s), 0));
             const x1: c_int = @intFromFloat(@min(@ceil((r.x + r.w) * s), @as(f32, @floatFromInt(self.screen.width))));
             const y1: c_int = @intFromFloat(@min(@ceil((r.y + r.h) * s), @as(f32, @floatFromInt(self.screen.height))));
             if (x1 <= x0 or y1 <= y0) return;
+            if (span.*) |*sample| {
+                sample.rectangles += 1;
+                sample.area_px += @as(u64, @intCast(x1 - x0)) * @as(u64, @intCast(y1 - y0));
+            }
             f(x0, y0 + @as(c_int, @intCast(self.screen.top)), x1 - x0, y1 - y0);
         }
 
@@ -716,6 +795,8 @@ pub fn App(comptime Root: type) type {
 
         fn frameTimer() callconv(.c) void {
             const self = &instance;
+            const span = self.beginTiming(.frame_timer);
+            defer self.endTiming(span);
             self.frame_timer_armed = false;
             // A timer also services any queued custom wake. Do not leave a
             // dropped SendEvent suppressing subsequent worker notifications.
@@ -733,6 +814,8 @@ pub fn App(comptime Root: type) type {
 
         fn a2Timer() callconv(.c) void {
             const self = &instance;
+            const span = self.beginTiming(.a2_timer);
+            defer self.endTiming(span);
             if (self.modal > 0) return;
             if (self.policy.idle(self.now())) |update| {
                 if (self.active) self.apply(update, &.{});
@@ -957,6 +1040,8 @@ pub fn App(comptime Root: type) type {
         /// After a modal UI closed: the library restored the pixels under
         /// it, so if frames were held meanwhile, everything is redrawn.
         fn modalClosed(self: *Self) void {
+            const span = self.beginTiming(.modal_resume);
+            defer self.endTiming(span);
             self.modal -= 1;
             if (self.held) {
                 self.held = false;

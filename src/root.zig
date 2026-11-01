@@ -35,6 +35,8 @@ const host = @import("host.zig");
 pub const inkview = @import("inkview.zig");
 /// Refresh hints to e-ink updates.
 pub const refresh = @import("refresh.zig");
+/// Opt-in host spans and refresh submission statistics (not optical latency).
+pub const timing = @import("timing.zig");
 /// Hardware keys to fabrum keys.
 pub const KeyMap = @import("keys.zig").KeyMap;
 /// A fake InkView, for testing hosts and apps without a device.
@@ -57,6 +59,7 @@ pub fn run(comptime Root: type, gpa: std.mem.Allocator, io: std.Io, props: Root.
 test {
     _ = inkview;
     _ = refresh;
+    _ = timing;
     _ = KeyMap;
     _ = host;
     _ = fake;
