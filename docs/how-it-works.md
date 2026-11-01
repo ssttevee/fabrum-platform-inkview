@@ -138,7 +138,13 @@ checks for completed tasks at most every `Options.task_poll_interval_ms`
 milliseconds (100 by default). This is a fallback for firmware that queues
 worker events without promptly waking the idle loop. It stops once the tasks
 are collected, and keeps any earlier UI timer deadline. Set the option to
-`null` to test direct wake delivery without periodic polling; ordinary UI
+`null` to use a slower adaptive rescue: `Options.task_rescue` defaults to
+250 ms initially, doubles to a 2000 ms maximum, and stops after collection.
+Earlier input/UI timers do not postpone its deadline. A pending job still
+holds sleep protection; rescue does not prove that firmware wakes from suspend.
+Set **both** `task_poll_interval_ms` and `task_rescue` to `null` only for an
+explicit event-only diagnostic. Presence of sleep-prevention symbols alone is
+not evidence of reliable event wake delivery on all firmware. Ordinary UI
 timers still run.
 
 `Options.task_activity` is called on the main thread while work is pending,

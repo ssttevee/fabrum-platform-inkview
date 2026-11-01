@@ -798,7 +798,7 @@ const WakeWorker = struct {
 };
 const WakeProbe = struct {
     pub const State = struct { finished: bool = false, ticks: usize = 0 };
-    pub const Props = struct { worker: *WakeWorker, tick_ms: ?i64 = null };
+    pub const Props = struct { worker: *WakeWorker, tick_ms: ?i64 = null, generation: usize = 0 };
     pub const Msg = union(enum) { done: std.Io.Cancelable!void, tick };
     pub fn update(state: *State, msg: Msg, _: *app.Update(WakeProbe)) !void {
         switch (msg) {
@@ -811,7 +811,7 @@ const WakeProbe = struct {
     }
     pub fn view(ui: *app.Ui, state: *const State, props: Props) !void {
         const on = ui.messages(WakeProbe);
-        try ui.task("worker", .{}, WakeWorker.run, .{props.worker}, on.handler(.done));
+        try ui.task("worker", .{ .restart = props.generation }, WakeWorker.run, .{props.worker}, on.handler(.done));
         if (props.tick_ms) |ms| try ui.every("tick", .fromMilliseconds(ms), on.bind(.tick));
         try ui.open(null, .{ .layout = .{ .sizing = .grow(.{}) }, .background_color = if (state.finished) .black else .white });
         ui.close();
@@ -898,7 +898,7 @@ test "task activity ends after exit has joined the running worker" {
     try testing.expect(fake.timer("fabrum-frame") == null);
 }
 
-test "task fallback can be disabled without losing activity or ordinary timers" {
+test "explicit event-only mode delivers native wakes without advancing time or losing ordinary timers" {
     try testing.expectEqual(@as(?u32, 100), (root.Options{}).task_poll_interval_ms);
     for ([_]?i64{ null, 40 }) |tick_ms| {
         try fake.init(testing.allocator, .{ .width = 64, .height = 64 });
@@ -909,6 +909,7 @@ test "task fallback can be disabled without losing activity or ordinary timers" 
             .clock = fake.clock,
             .task_activity = observeTaskActivity,
             .task_poll_interval_ms = null,
+            .task_rescue = null,
         });
         defer WakeHost.instance.deinit();
         defer worker.release.set(testing.io);
@@ -955,4 +956,179 @@ test "native panel survives app drawing and dynamic fullscreen transitions" {
     try testing.expectEqual(40, host().screen.top);
     try testing.expectEqual(984, host().screen.height);
     for (fake.row(0)) |pixel| try testing.expectEqual(73, pixel);
+}
+
+test "adaptive rescue bounds lost wakes without sliding on earlier timers and stops after cleanup" {
+    try fake.init(testing.allocator, .{ .width = 64, .height = 64 });
+    defer fake.deinit();
+    var worker: WakeWorker = .{};
+    var api = fake.api();
+    api.SendEvent = dropWorkerWake;
+    try WakeHost.run(testing.allocator, testing.io, api, .{ .worker = &worker, .tick_ms = 40 }, .{
+        .clock = fake.clock,
+        .task_activity = observeTaskActivity,
+        .task_poll_interval_ms = null,
+        .task_rescue = .{ .initial_ms = 100, .max_ms = 400 },
+        .frame_timer = .weak,
+    });
+    defer WakeHost.instance.deinit();
+    defer worker.release.set(testing.io);
+    try worker.started.wait(testing.io);
+    try testing.expect(fake.timer("fabrum-frame").?.hard);
+    try testing.expectEqual(100, std.Io.Timestamp.zero.durationTo(WakeHost.instance.task_rescue_due.?).toMilliseconds());
+    fake.advance(80); // Earlier ordinary deadlines cannot postpone the rescue.
+    try testing.expectEqual(100, std.Io.Timestamp.zero.durationTo(WakeHost.instance.task_rescue_due.?).toMilliseconds());
+    fake.advance(20);
+    try testing.expectEqual(200, WakeHost.instance.task_rescue_ms);
+    fake.advance(200);
+    try testing.expectEqual(400, WakeHost.instance.task_rescue_ms);
+    fake.advance(4000);
+    try testing.expectEqual(400, WakeHost.instance.task_rescue_ms);
+    const record = WakeHost.instance.runtime.core.tasks.records.items[0];
+    worker.release.set(testing.io);
+    try record.group.await(testing.io);
+    try testing.expect(!WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+    fake.advance(400);
+    try testing.expect(WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+    try testing.expectEqual(@as(u8, 0), fake.state.framebuffer[0]);
+    try testing.expect(!task_activity_current);
+    try testing.expectEqual(@as(?std.Io.Timestamp, null), WakeHost.instance.task_rescue_due);
+    try testing.expect(!fake.timer("fabrum-frame").?.hard); // Only the ordinary weak timer remains.
+}
+
+test "default rescue coalesces native worker wakes and cancels its hard timer after collection" {
+    try fake.init(testing.allocator, .{ .width = 64, .height = 64 });
+    defer fake.deinit();
+    var worker: WakeWorker = .{};
+    try WakeHost.run(testing.allocator, testing.io, fake.api(), .{ .worker = &worker }, .{
+        .clock = fake.clock,
+        .task_activity = observeTaskActivity,
+        .task_poll_interval_ms = null,
+    });
+    defer WakeHost.instance.deinit();
+    defer worker.release.set(testing.io);
+    try worker.started.wait(testing.io);
+    try testing.expectEqual(250, fake.timer("fabrum-frame").?.due_ms);
+    worker.release.set(testing.io);
+    try WakeHost.instance.runtime.core.tasks.records.items[0].group.await(testing.io);
+    try testing.expectEqual(@as(usize, 1), fake.state.queue.items.len);
+    WakeHost.instance.runtime.core.platform.?.requestFrame();
+    WakeHost.instance.runtime.core.platform.?.requestFrame();
+    try testing.expectEqual(@as(usize, 1), fake.state.queue.items.len);
+    fake.pump(); // Native SendEvent delivery, no timer or input rescue.
+    try testing.expectEqual(0, fake.state.now_ms);
+    try testing.expect(WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+    try testing.expect(!WakeHost.instance.wake_pending.load(.acquire));
+    try testing.expect(!task_activity_current);
+    try testing.expect(fake.timer("fabrum-frame") == null);
+    fake.advance(10_000);
+    try testing.expect(fake.timer("fabrum-frame") == null);
+}
+
+test "adaptive rescue alone backs off while blocked and rescues a dropped completion" {
+    try fake.init(testing.allocator, .{ .width = 64, .height = 64 });
+    defer fake.deinit();
+    var worker: WakeWorker = .{};
+    var api = fake.api();
+    api.SendEvent = dropWorkerWake;
+    try WakeHost.run(testing.allocator, testing.io, api, .{ .worker = &worker }, .{
+        .clock = fake.clock,
+        .task_activity = observeTaskActivity,
+        .task_poll_interval_ms = null,
+    });
+    defer WakeHost.instance.deinit();
+    defer worker.release.set(testing.io);
+    try worker.started.wait(testing.io);
+    for ([_]i64{ 250, 500, 1000, 2000, 2000 }) |ms| {
+        try testing.expectEqual(fake.state.now_ms + ms, fake.timer("fabrum-frame").?.due_ms);
+        fake.advance(ms);
+    }
+    try testing.expect(task_activity_current);
+    worker.release.set(testing.io);
+    try WakeHost.instance.runtime.core.tasks.records.items[0].group.await(testing.io);
+    fake.advance(1999);
+    try testing.expect(!WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+    fake.advance(1);
+    try testing.expect(WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+    try testing.expectEqual(@as(u8, 0), fake.state.framebuffer[0]);
+    try testing.expect(fake.timer("fabrum-frame") == null);
+    try testing.expect(!task_activity_current);
+    try testing.expect(!WakeHost.instance.wake_pending.load(.acquire));
+}
+
+test "rescue while frames are held under a modal retains ownership without a dirty-frame spin" {
+    try fake.init(testing.allocator, .{ .width = 64, .height = 64 });
+    defer fake.deinit();
+    var worker: WakeWorker = .{};
+    var api = fake.api();
+    api.SendEvent = dropWorkerWake;
+    try WakeHost.run(testing.allocator, testing.io, api, .{ .worker = &worker }, .{
+        .clock = fake.clock,
+        .task_activity = observeTaskActivity,
+        .task_poll_interval_ms = null,
+    });
+    defer WakeHost.instance.deinit();
+    defer worker.release.set(testing.io);
+    try worker.started.wait(testing.io);
+    WakeHost.instance.modal = 1;
+    worker.release.set(testing.io);
+    const record = WakeHost.instance.runtime.core.tasks.records.items[0];
+    try record.group.await(testing.io);
+    fake.clearUpdates();
+    for ([_]i64{ 250, 500, 1000, 2000, 2000 }) |ms| {
+        try testing.expectEqual(fake.state.now_ms + ms, fake.timer("fabrum-frame").?.due_ms);
+        fake.advance(ms);
+    }
+    try testing.expect(task_activity_current);
+    try testing.expect(!record.reclaimed);
+    try testing.expect(!WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+    try testing.expectEqual(@as(usize, 0), fake.state.updates.items.len);
+    WakeHost.instance.modal = 0; // Modal closes: collect the held completion exactly once.
+    _ = fake.send(@fromBackingInt(root.wake_event), 0, 0);
+    try testing.expect(WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+    try testing.expect(!task_activity_current);
+    try testing.expect(fake.timer("fabrum-frame") == null);
+}
+
+test "native and rescued cleanup wakes retain canceled ownership and discard invalidated completion" {
+    for ([_]bool{ false, true }) |native| {
+        try fake.init(testing.allocator, .{ .width = 64, .height = 64 });
+        defer fake.deinit();
+        var old_worker: WakeWorker = .{};
+        var replacement: WakeWorker = .{};
+        var api = fake.api();
+        if (!native) api.SendEvent = dropWorkerWake;
+        try WakeHost.run(testing.allocator, testing.io, api, .{ .worker = &old_worker }, .{
+            .clock = fake.clock,
+            .task_activity = observeTaskActivity,
+            .task_poll_interval_ms = null,
+            .task_rescue = if (native) null else .{},
+        });
+        defer WakeHost.instance.deinit();
+        defer replacement.release.set(testing.io);
+        defer old_worker.release.set(testing.io);
+        try old_worker.started.wait(testing.io);
+        const old_record = WakeHost.instance.runtime.core.tasks.records.items[0];
+        WakeHost.instance.props = .{ .worker = &replacement, .generation = 1 };
+        _ = fake.send(.repaint, 0, 0); // Invalidates a worker still blocked in native work.
+        try testing.expect(old_record.canceled.load(.acquire));
+        try testing.expect(!old_record.reclaimed);
+        try testing.expect(task_activity_current);
+        fake.advance(250);
+        try testing.expect(!WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+        try testing.expectEqual(!native, fake.timer("fabrum-frame") != null);
+        old_worker.release.set(testing.io);
+        try old_record.reaper.await(testing.io);
+        if (native) fake.pump() else fake.advance(500); // Cleanup must not strand its replacement.
+        try replacement.started.wait(testing.io);
+        try testing.expect(!WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+        try testing.expect(task_activity_current);
+        try testing.expectEqual(@as(usize, 1), WakeHost.instance.runtime.core.tasks.records.items.len);
+        replacement.release.set(testing.io);
+        try WakeHost.instance.runtime.core.tasks.records.items[0].group.await(testing.io);
+        if (native) fake.pump() else fake.advance(1000);
+        try testing.expect(WakeHost.instance.runtime.rootState(WakeProbe).?.finished);
+        try testing.expect(!task_activity_current);
+        try testing.expect(fake.timer("fabrum-frame") == null);
+    }
 }

@@ -106,9 +106,14 @@ pub const Options = struct {
     /// and with false after workers are joined at shutdown.
     task_activity: ?*const fn (bool) void = null,
     /// Maximum fallback wake interval while tasks are pending, in milliseconds.
-    /// Null relies on worker notifications and leaves ordinary UI timers alone.
+    /// Null uses worker notifications with the slower adaptive task_rescue.
     /// The task activity hook remains active when this fallback is disabled.
     task_poll_interval_ms: ?u32 = 100,
+    /// Safety net when task polling is disabled. Backs off while work remains,
+    /// never postpones an already scheduled rescue on input, and stops once
+    /// task results/cleanup are collected. Independent of sleep-preventor symbols.
+    /// Null explicitly opts into event-only delivery (e.g. a wake diagnostic).
+    task_rescue: ?TaskRescue = .{},
     /// How the whole screen is refreshed when the library asks for a
     /// redraw (`EVT_SHOW` after the keyboard closes, `EVT_REPAINT`,
     /// coming back to the foreground): a cleaning flash, or quietly.
@@ -130,6 +135,11 @@ pub const Options = struct {
     /// The clock frames run on, or null for the monotonic clock. A fake
     /// InkView gives its own, so timers come due when it says.
     clock: ?*const fn () Io.Timestamp = null,
+
+    pub const TaskRescue = struct {
+        initial_ms: u32 = 250,
+        max_ms: u32 = 2000,
+    };
 
     pub const Font = struct { name: [:0]const u8, data: []const u8 };
 };
@@ -166,6 +176,9 @@ pub fn App(comptime Root: type) type {
         /// Redraw everything next time, with at least this refresh.
         stale: ?app.Refresh = null,
         frame_timer_armed: bool = false,
+        task_rescue_due: ?Io.Timestamp = null,
+        task_rescue_ms: u32 = 0,
+        task_service_due: bool = false,
         wake_pending: std.atomic.Value(bool) = .init(false),
         /// The modal requests under way, with what they own.
         open_dialog: ?Dialog = null,
@@ -316,7 +329,10 @@ pub fn App(comptime Root: type) type {
                     self.stale = self.showRefresh();
                 },
                 .background => self.active = false,
-                _ => if (@backingInt(event) == wake_event) self.wake_pending.store(false, .release) else return 0,
+                _ => if (@backingInt(event) == wake_event) {
+                    self.wake_pending.store(false, .release);
+                    self.task_service_due = true;
+                } else return 0,
                 else => return 0,
             }
             self.deferred = true;
@@ -402,6 +418,8 @@ pub fn App(comptime Root: type) type {
                 _ => {
                     if (@backingInt(event) != wake_event) return null;
                     self.wake_pending.store(false, .release);
+                    // Cleanup-only wakes have no queued application message.
+                    self.task_service_due = true;
                     taken = true;
                 },
                 else => return null,
@@ -527,6 +545,7 @@ pub fn App(comptime Root: type) type {
             }
             if (self.modal > 0) {
                 self.held = true;
+                self.armFrameTimer();
                 return;
             }
             if (self.in_runtime) {
@@ -539,6 +558,8 @@ pub fn App(comptime Root: type) type {
                 self.deferred = false;
                 // the screen may have turned or moved since the last frame
                 try self.readGeometry();
+                const service_tasks = self.task_service_due;
+                self.task_service_due = false;
                 var count: usize = 0;
                 while (self.runtime.nextFrame()) |due| {
                     const t = self.now();
@@ -553,8 +574,9 @@ pub fn App(comptime Root: type) type {
                     count += 1;
                     if (self.modal > 0) break;
                 }
-                if (self.stale != null and count == 0 and self.modal == 0) {
-                    // the commands may be from before the screen changed
+                if ((self.stale != null or service_tasks) and count == 0 and self.modal == 0) {
+                    // Stale commands need layout. Task ticks also collect canceled
+                    // workers with no result message and launch blocked successors.
                     _ = try self.runtime.frame(Root, self.props, self.screen.viewport(), self.now());
                     if (self.exiting) {
                         self.stopTasks();
@@ -641,11 +663,10 @@ pub fn App(comptime Root: type) type {
         fn armFrameTimer(self: *Self) void {
             const pending = self.hasPendingTasks();
             if (self.options.task_activity) |activity| activity(pending);
-            const interval: ?c_int = if (pending) if (self.options.task_poll_interval_ms) |ms|
-                @intCast(@min(@max(ms, 1), std.math.maxInt(c_int)))
-            else
-                null else null;
-            const ms = if (self.runtime.nextFrame()) |due|
+            const interval = self.taskFallback(pending);
+            // Dirty frames held under a modal must not spin on their past due time.
+            const due_frame = if (self.modal > 0) null else self.runtime.nextFrame();
+            const ms = if (due_frame) |due|
                 if (interval) |poll_ms| @min(self.millisUntil(due), poll_ms) else self.millisUntil(due)
             else if (interval) |poll_ms|
                 poll_ms
@@ -667,12 +688,39 @@ pub fn App(comptime Root: type) type {
             self.frame_timer_armed = true;
         }
 
+        /// Main-thread-only rescue state. Deadlines survive unrelated input and
+        /// earlier UI timers, so a busy event stream cannot starve completion.
+        fn taskFallback(self: *Self, pending: bool) ?c_int {
+            if (!pending or self.options.task_poll_interval_ms != null or self.options.task_rescue == null) {
+                self.task_rescue_due = null;
+                self.task_rescue_ms = 0;
+                return if (pending) if (self.options.task_poll_interval_ms) |ms|
+                    @intCast(@min(@max(ms, 1), std.math.maxInt(c_int)))
+                else
+                    null else null;
+            }
+            const config = self.options.task_rescue.?;
+            const cap = @min(@max(config.max_ms, 1), std.math.maxInt(c_int));
+            const now_ = self.now();
+            if (self.task_rescue_due) |due| {
+                if (now_.nanoseconds >= due.nanoseconds) {
+                    self.task_rescue_ms = @min(self.task_rescue_ms *| 2, cap);
+                    self.task_rescue_due = now_.addDuration(.fromMilliseconds(self.task_rescue_ms));
+                }
+            } else {
+                self.task_rescue_ms = @min(@max(config.initial_ms, 1), cap);
+                self.task_rescue_due = now_.addDuration(.fromMilliseconds(self.task_rescue_ms));
+            }
+            return self.millisUntil(self.task_rescue_due.?);
+        }
+
         fn frameTimer() callconv(.c) void {
             const self = &instance;
             self.frame_timer_armed = false;
             // A timer also services any queued custom wake. Do not leave a
             // dropped SendEvent suppressing subsequent worker notifications.
             self.wake_pending.store(false, .release);
+            if (self.hasPendingTasks()) self.task_service_due = true;
             self.frames() catch |err| log.err("frame timer: {t}", .{err});
         }
 
@@ -924,6 +972,9 @@ pub fn App(comptime Root: type) type {
             self.api.ClearTimer(frameTimer);
             self.api.ClearTimer(a2Timer);
             self.frame_timer_armed = false;
+            self.task_rescue_due = null;
+            self.task_rescue_ms = 0;
+            self.task_service_due = false;
             self.runtime.cancelTasks();
             if (self.options.task_activity) |activity| activity(false);
         }
